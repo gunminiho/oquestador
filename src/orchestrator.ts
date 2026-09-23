@@ -33,7 +33,6 @@ async function runAgent(
 
   await client.waitUntilFinished(conversation.id, {
     pollIntervalMs: 1000,
-    timeoutMs: 180_000,
   });
 
   return client.getFinalResponse(conversation.id);
@@ -396,15 +395,3 @@ main().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });
-
-
-
-
-
-
-
-
-
-
-
-

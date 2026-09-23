@@ -60,7 +60,6 @@ Después del verdict puedes explicar brevemente el motivo.
 
   await client.waitUntilFinished(conversation.id, {
     pollIntervalMs: 1000,
-    timeoutMs: 180_000,
   });
 
   const response = await client.getFinalResponse(conversation.id);

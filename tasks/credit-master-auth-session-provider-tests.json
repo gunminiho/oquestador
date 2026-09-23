@@ -1,0 +1,25 @@
+﻿{
+    "id":  "credit-master-auth-session-provider-tests",
+    "repository":  {
+                       "owner":  "gunminiho",
+                       "name":  "credit-master"
+                   },
+    "workspace":  "/projects/Credit_Master",
+    "baseBranch":  "main",
+    "workingBranch":  "agent/auth-session-provider-tests",
+    "objective":  "Agregar cobertura automatizada robusta para AuthSessionProvider sin cambiar innecesariamente su comportamiento público.",
+    "acceptanceCriteria":  [
+                               "Agregar pruebas enfocadas en AuthSessionProvider y su manejo del estado de autenticación.",
+                               "Cubrir la restauración inicial de sesión y los estados authenticated y unauthenticated.",
+                               "Cubrir actualizaciones de sesión provenientes de onSessionChanged.",
+                               "Cubrir signOut y verificar que el estado termine como unauthenticated.",
+                               "Cubrir el manejo de callback OAuth válido sin exponer access tokens ni refresh tokens al estado de presentación.",
+                               "Cubrir que un callback OAuth no esperado sea ignorado.",
+                               "No modificar comportamiento de producción salvo que sea estrictamente necesario para hacer el código testeable.",
+                               "Ejecutar únicamente las pruebas relacionadas con autenticación durante la iteración y, antes de entregar, ejecutar typecheck y lint.",
+                               "No introducir secretos, credenciales ni valores reales de Google o Supabase.",
+                               "No hacer merge del Pull Request."
+                           ],
+    "maxReviewCycles":  3,
+    "pullRequestNumber":  3
+}

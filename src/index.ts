@@ -29,7 +29,6 @@ async function main(): Promise<void> {
 
   const finished = await client.waitUntilFinished(conversation.id, {
     pollIntervalMs: 1000,
-    timeoutMs: 180_000,
   });
 
   console.log(`Status: ${finished.execution_status}`);

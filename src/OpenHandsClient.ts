@@ -13,7 +13,6 @@ export interface CreateConversationOptions {
 
 export interface WaitOptions {
   pollIntervalMs?: number;
-  timeoutMs?: number;
 }
 
 export class OpenHandsClient {
@@ -59,21 +58,26 @@ export class OpenHandsClient {
     options: WaitOptions = {},
   ): Promise<ConversationInfo> {
     const pollIntervalMs = options.pollIntervalMs ?? 1000;
-    const timeoutMs = options.timeoutMs ?? 120_000;
-
-    const startedAt = Date.now();
 
     let transient404Count = 0;
-    let lastStatus = "unknown";
+    let lastHeartbeatAt = Date.now();
 
     while (true) {
       try {
         const conversation = await this.getConversation(conversationId);
 
-        lastStatus = conversation.execution_status;
-
         if (conversation.execution_status === "finished") {
           return conversation;
+        }
+
+        const now = Date.now();
+
+        if (now - lastHeartbeatAt >= 30_000) {
+          console.log(
+            `Conversation ${conversationId} is still ${conversation.execution_status}; waiting...`,
+          );
+
+          lastHeartbeatAt = now;
         }
       } catch (error: unknown) {
         const isTransientNotFound =
@@ -92,17 +96,7 @@ export class OpenHandsClient {
         );
       }
 
-      const elapsedMs = Date.now() - startedAt;
-
-      if (elapsedMs >= timeoutMs) {
-        throw new Error(
-          `Conversation ${conversationId} timed out after ${timeoutMs}ms. ` +
-            `Last status: ${lastStatus}. ` +
-            `Transient 404s: ${transient404Count}.`,
-        );
-      }
-
-      await new Promise((resolve) =>
+      await new Promise<void>((resolve) =>
         setTimeout(resolve, pollIntervalMs),
       );
     }
@@ -139,6 +133,3 @@ export class OpenHandsClient {
     return (await response.json()) as T;
   }
 }
-
-
-
