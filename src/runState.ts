@@ -12,7 +12,7 @@ import {
   type WorkflowState,
 } from "./workflow";
 
-export const RUN_STATE_VERSION = 1;
+export const RUN_STATE_VERSION = 2;
 
 export type WorkflowStage =
   | "PREPARATION"
@@ -25,6 +25,10 @@ export interface RunState {
   workflowState: WorkflowState;
   implementationCycle: number;
   pullRequestNumber: number | null;
+  reviewAttempt: number;
+  reviewHeadSha: string | null;
+  approvedHeadSha: string | null;
+  mergeCommitSha: string | null;
   reviewerFeedback: string | null;
   activeStage: WorkflowStage | null;
   activeConversationId: string | null;
@@ -50,6 +54,10 @@ export function createInitialRunState(
     workflowState,
     implementationCycle: 0,
     pullRequestNumber,
+    reviewAttempt: 0,
+    reviewHeadSha: null,
+    approvedHeadSha: null,
+    mergeCommitSha: null,
     reviewerFeedback: null,
     activeStage: null,
     activeConversationId: null,
@@ -124,6 +132,12 @@ export function validateRunState(
     throw new Error(`${source} must be an object.`);
   }
 
+  value = migrateRunState(value, source);
+
+  if (!isRecord(value)) {
+    throw new Error(`${source} must be an object.`);
+  }
+
   assertEqual(value.version, RUN_STATE_VERSION, `${source}.version`);
   assertString(value.taskId, `${source}.taskId`);
 
@@ -142,6 +156,13 @@ export function validateRunState(
     value.pullRequestNumber,
     `${source}.pullRequestNumber`,
   );
+  assertNonNegativeInteger(
+    value.reviewAttempt,
+    `${source}.reviewAttempt`,
+  );
+  assertNullableSha(value.reviewHeadSha, `${source}.reviewHeadSha`);
+  assertNullableSha(value.approvedHeadSha, `${source}.approvedHeadSha`);
+  assertNullableSha(value.mergeCommitSha, `${source}.mergeCommitSha`);
   assertNullableString(
     value.reviewerFeedback,
     `${source}.reviewerFeedback`,
@@ -171,6 +192,29 @@ export function validateRunState(
   assertString(value.updatedAt, `${source}.updatedAt`);
 
   return value as unknown as RunState;
+}
+
+function migrateRunState(value: unknown, source: string): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  if (value.version === RUN_STATE_VERSION) {
+    return value;
+  }
+
+  if (value.version !== 1) {
+    throw new Error(`${source}.version must be ${RUN_STATE_VERSION}.`);
+  }
+
+  return {
+    ...value,
+    version: RUN_STATE_VERSION,
+    reviewAttempt: 0,
+    reviewHeadSha: null,
+    approvedHeadSha: null,
+    mergeCommitSha: null,
+  };
 }
 
 function safeTaskId(taskId: string): string {
@@ -240,10 +284,23 @@ function assertWorkflowState(value: unknown, field: string): void {
     value !== "PREPARING" &&
     value !== "IMPLEMENTING" &&
     value !== "REVIEWING" &&
+    value !== "MERGING" &&
     value !== "DONE" &&
     value !== "FAILED"
   ) {
     throw new Error(`${field} is invalid.`);
+  }
+}
+
+function assertNullableSha(value: unknown, field: string): void {
+  if (
+    value !== null &&
+    (
+      typeof value !== "string" ||
+      !/^[0-9a-fA-F]{40}$/.test(value)
+    )
+  ) {
+    throw new Error(`${field} must be a Git SHA or null.`);
   }
 }
 

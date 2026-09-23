@@ -4,12 +4,21 @@ import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runWorkflow } from "./orchestrator";
+import type {
+  GitHubClient,
+  MergePullRequestResult,
+  PullRequestDetails,
+} from "./GitHubClient";
+import { runWorkflow as runRealWorkflow } from "./orchestrator";
 import {
   createInitialRunState,
   RunStateStore,
 } from "./runState";
 import type { WorkflowTask } from "./task";
+
+const SHA_ONE = "1111111111111111111111111111111111111111";
+const SHA_TWO = "2222222222222222222222222222222222222222";
+const MERGE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 class FakeClient {
   createCount = 0;
@@ -97,6 +106,51 @@ class FakeClient {
   }
 }
 
+class FakeGitHubClient implements GitHubClient {
+  getCount = 0;
+  mergeCount = 0;
+  mergeExpectedHeadShas: string[] = [];
+  pullRequest: PullRequestDetails = {
+    number: 123,
+    state: "OPEN",
+    merged: false,
+    baseRefName: "main",
+    headRefName: "agent/crash-safe-workflow-resume",
+    headRefOid: SHA_ONE,
+    headRepositoryOwner: "gunminiho",
+    headRepositoryName: "oquestador",
+    mergeCommitSha: null,
+  };
+  afterGet: Array<(client: FakeGitHubClient) => void> = [];
+
+  async getPullRequest(): Promise<PullRequestDetails> {
+    this.getCount += 1;
+    const pullRequest = { ...this.pullRequest };
+    const callback = this.afterGet.shift();
+    if (callback !== undefined) {
+      callback(this);
+    }
+    return pullRequest;
+  }
+
+  async mergePullRequest(options: {
+    expectedHeadSha: string;
+  }): Promise<MergePullRequestResult> {
+    this.mergeCount += 1;
+    this.mergeExpectedHeadShas.push(options.expectedHeadSha);
+    if (this.pullRequest.headRefOid !== options.expectedHeadSha) {
+      throw new Error("Head commit changed");
+    }
+    this.pullRequest = {
+      ...this.pullRequest,
+      state: "MERGED",
+      merged: true,
+      mergeCommitSha: MERGE_SHA,
+    };
+    return { mergeCommitSha: MERGE_SHA };
+  }
+}
+
 function responseForMessage(
   this: FakeClient,
   message: string,
@@ -133,6 +187,17 @@ function temporaryStore(): RunStateStore {
   return new RunStateStore(
     mkdtempSync(join(tmpdir(), "orchestrator-test-")),
   );
+}
+
+async function runWorkflow(
+  options: Parameters<typeof runRealWorkflow>[0] & {
+    github?: GitHubClient;
+  },
+) {
+  return runRealWorkflow({
+    ...options,
+    github: options.github ?? new FakeGitHubClient(),
+  });
 }
 
 test("resumes from PREPARING and completes workflow", async () => {
@@ -271,6 +336,233 @@ test("continues through repeated requested changes until reviewer approves", asy
   );
 });
 
+test("APPROVED moves through MERGING and merges exactly the reviewed head SHA", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(finalState.approvedHeadSha, SHA_ONE);
+  assert.equal(finalState.mergeCommitSha, MERGE_SHA);
+  assert.deepEqual(github.mergeExpectedHeadShas, [SHA_ONE]);
+});
+
+test("CHANGES_REQUESTED returns to IMPLEMENTING without attempting merge", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  client.reviewVerdicts = ["CHANGES_REQUESTED", "APPROVED"];
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(finalState.implementationCycle, 2);
+  assert.equal(github.mergeCount, 1);
+  assert.deepEqual(github.mergeExpectedHeadShas, [SHA_ONE]);
+});
+
+test("CHANGES_REQUESTED does not attempt merge before implementation resumes", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  client.reviewVerdicts = ["CHANGES_REQUESTED"];
+  client.implementationResponse = "IMPLEMENTATION_RESULT: NOT_READY";
+  store.save({
+    ...createInitialRunState("workflow-task", "REVIEWING", 123),
+    implementationCycle: 1,
+  });
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      github,
+      task: task(),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    /Expected exactly one IMPLEMENTATION_RESULT/,
+  );
+
+  assert.equal(github.mergeCount, 0);
+});
+
+test("does not merge when HEAD changes after APPROVED and creates a new review", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  github.afterGet = [
+    () => {},
+    (fake) => {
+      fake.pullRequest = {
+        ...fake.pullRequest,
+        headRefOid: SHA_TWO,
+      };
+    },
+  ];
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  const reviewMessages = client.messages.filter((message) =>
+    message.includes("Actúa exclusivamente como Reviewer"),
+  );
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(client.reviewCount, 2);
+  assert.equal(github.mergeCount, 1);
+  assert.deepEqual(github.mergeExpectedHeadShas, [SHA_TWO]);
+  assert.match(reviewMessages[0] ?? "", new RegExp(SHA_ONE));
+  assert.match(reviewMessages[1] ?? "", new RegExp(SHA_TWO));
+});
+
+test("review conversation ids differ for the same cycle when HEAD changes", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  github.afterGet = [
+    () => {},
+    (fake) => {
+      fake.pullRequest = {
+        ...fake.pullRequest,
+        headRefOid: SHA_TWO,
+      };
+    },
+  ];
+
+  await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  const reviewIds = [...client.statuses.keys()].filter(
+    (id) => client.responses.get(id)?.includes("REVIEW_VERDICT"),
+  );
+
+  assert.equal(reviewIds.length, 2);
+  assert.notEqual(reviewIds[0], reviewIds[1]);
+});
+
+test("resumes from MERGING with an open PR and correct HEAD", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  store.save({
+    ...createInitialRunState("workflow-task", "MERGING", 123),
+    implementationCycle: 1,
+    reviewAttempt: 1,
+    reviewHeadSha: SHA_ONE,
+    approvedHeadSha: SHA_ONE,
+    lastReviewerVerdict: "APPROVED",
+  });
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(client.createCount, 0);
+  assert.deepEqual(github.mergeExpectedHeadShas, [SHA_ONE]);
+});
+
+test("recovers from MERGING when GitHub already reports the PR merged", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  github.pullRequest = {
+    ...github.pullRequest,
+    state: "MERGED",
+    merged: true,
+    mergeCommitSha: MERGE_SHA,
+  };
+  store.save({
+    ...createInitialRunState("workflow-task", "MERGING", 123),
+    implementationCycle: 1,
+    reviewAttempt: 1,
+    reviewHeadSha: SHA_ONE,
+    approvedHeadSha: SHA_ONE,
+    lastReviewerVerdict: "APPROVED",
+  });
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(github.mergeCount, 0);
+});
+
+test("fails recovery when an already merged PR has a different HEAD", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  github.pullRequest = {
+    ...github.pullRequest,
+    state: "MERGED",
+    merged: true,
+    headRefOid: SHA_TWO,
+  };
+  store.save({
+    ...createInitialRunState("workflow-task", "MERGING", 123),
+    implementationCycle: 1,
+    reviewAttempt: 1,
+    reviewHeadSha: SHA_ONE,
+    approvedHeadSha: SHA_ONE,
+    lastReviewerVerdict: "APPROVED",
+  });
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      github,
+      task: task(),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    /expected approved head/,
+  );
+
+  assert.equal(store.load("workflow-task")?.workflowState, "FAILED");
+  assert.equal(github.mergeCount, 0);
+});
+
 test("persists the stage conversation id before creating the remote conversation", async () => {
   const store = temporaryStore();
   const client = new FakeClient();
@@ -387,6 +679,8 @@ test("processes an already finished persisted conversation without launching ano
   store.save({
     ...createInitialRunState("workflow-task", "REVIEWING", 90),
     implementationCycle: 2,
+    reviewAttempt: 1,
+    reviewHeadSha: SHA_ONE,
     activeStage: "REVIEW",
     activeConversationId: "finished-review",
     reviewConversationId: "finished-review",
@@ -409,6 +703,7 @@ test("processes an already finished persisted conversation without launching ano
 test("DONE RunState is idempotent", async () => {
   const store = temporaryStore();
   const client = new FakeClient();
+  const github = new FakeGitHubClient();
   store.save({
     ...createInitialRunState("workflow-task", "DONE", 101),
     implementationCycle: 1,
@@ -417,6 +712,7 @@ test("DONE RunState is idempotent", async () => {
 
   const finalState = await runWorkflow({
     client,
+    github,
     task: task(),
     store,
     agentProfileId: "profile",
@@ -426,6 +722,8 @@ test("DONE RunState is idempotent", async () => {
   assert.equal(finalState.workflowState, "DONE");
   assert.equal(client.createCount, 0);
   assert.equal(client.waitCount, 0);
+  assert.equal(github.getCount, 0);
+  assert.equal(github.mergeCount, 0);
 });
 
 test("persists FAILED when a resumed conversation fails", async () => {
@@ -438,6 +736,8 @@ test("persists FAILED when a resumed conversation fails", async () => {
   store.save({
     ...createInitialRunState("workflow-task", "REVIEWING", 102),
     implementationCycle: 1,
+    reviewAttempt: 1,
+    reviewHeadSha: SHA_ONE,
     activeStage: "REVIEW",
     activeConversationId: "bad-review",
     reviewConversationId: "bad-review",

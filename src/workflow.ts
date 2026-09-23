@@ -2,6 +2,7 @@
   | "PREPARING"
   | "IMPLEMENTING"
   | "REVIEWING"
+  | "MERGING"
   | "DONE"
   | "FAILED";
 
@@ -41,7 +42,7 @@ export function nextStateAfterReview(
 ): WorkflowState {
   switch (verdict) {
     case "APPROVED":
-      return "DONE";
+      return "MERGING";
 
     case "CHANGES_REQUESTED":
       return "IMPLEMENTING";
