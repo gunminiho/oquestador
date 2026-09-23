@@ -32,6 +32,10 @@ test("creates, saves, and loads initial RunState", () => {
   assert.equal(loaded?.workflowState, "PREPARING");
   assert.equal(loaded?.implementationCycle, 0);
   assert.equal(loaded?.pullRequestNumber, null);
+  assert.equal(loaded?.reviewAttempt, 0);
+  assert.equal(loaded?.reviewHeadSha, null);
+  assert.equal(loaded?.approvedHeadSha, null);
+  assert.equal(loaded?.mergeCommitSha, null);
   assert.equal(loaded?.reviewerFeedback, null);
   assert.equal(loaded?.activeConversationId, null);
 });
@@ -93,6 +97,59 @@ test("rejects invalid RunState", () => {
   assert.throws(
     () => store.load("invalid-task"),
     /implementationCycle/,
+  );
+});
+
+test("migrates version 1 RunState by adding merge review fields", () => {
+  const dir = mkdtempSync(join(tmpdir(), "run-state-test-"));
+  const store = new RunStateStore(dir);
+
+  writeFileSync(
+    join(dir, "legacy-task.json"),
+    JSON.stringify({
+      version: 1,
+      taskId: "legacy-task",
+      workflowState: "REVIEWING",
+      implementationCycle: 2,
+      pullRequestNumber: 44,
+      reviewerFeedback: null,
+      activeStage: null,
+      activeConversationId: null,
+      preparationConversationId: null,
+      implementationConversationId: null,
+      reviewConversationId: null,
+      lastReviewerVerdict: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }),
+    "utf8",
+  );
+
+  const loaded = store.load("legacy-task");
+
+  assert.equal(loaded?.version, 2);
+  assert.equal(loaded?.reviewAttempt, 0);
+  assert.equal(loaded?.reviewHeadSha, null);
+  assert.equal(loaded?.approvedHeadSha, null);
+  assert.equal(loaded?.mergeCommitSha, null);
+});
+
+test("rejects unknown RunState versions", () => {
+  const dir = mkdtempSync(join(tmpdir(), "run-state-test-"));
+  const store = new RunStateStore(dir);
+
+  writeFileSync(
+    join(dir, "future-task.json"),
+    JSON.stringify({
+      ...createInitialRunState("future-task", "PREPARING", null),
+      version: 999,
+    }),
+    "utf8",
+  );
+
+  assert.throws(
+    () => store.load("future-task"),
+    /version must be 2/,
   );
 });
 

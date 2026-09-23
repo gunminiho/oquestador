@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
 
+import {
+  GhCliGitHubClient,
+  type GitHubClient,
+  type PullRequestDetails,
+} from "./GitHubClient";
 import { OpenHandsClient } from "./OpenHandsClient";
 import {
   buildImplementationMessage,
@@ -51,6 +56,7 @@ interface RunWorkflowOptions {
   agentProfileId: string;
   initialStateOverride?: WorkflowState;
   pollIntervalMs?: number;
+  github?: GitHubClient;
 }
 
 function requiredEnv(name: string): string {
@@ -67,6 +73,7 @@ export async function runWorkflow(
   options: RunWorkflowOptions,
 ): Promise<RunState> {
   const task = options.task;
+  const github = options.github ?? new GhCliGitHubClient();
   let runState = loadOrCreateRunState(options);
 
   task.pullRequestNumber =
@@ -209,12 +216,39 @@ export async function runWorkflow(
           "Review cannot start without a Pull Request number.",
         );
       }
+      const pullRequestNumber = runState.pullRequestNumber;
+
+      const pullRequest = await getValidatedPullRequest(
+        options,
+        github,
+        runState,
+        pullRequestNumber,
+      );
+
+      if (
+        runState.reviewHeadSha !== pullRequest.headRefOid ||
+        runState.activeStage !== "REVIEW"
+      ) {
+        runState = saveState(options.store, {
+          ...runState,
+          reviewAttempt: runState.reviewAttempt + 1,
+          reviewHeadSha: pullRequest.headRefOid,
+          approvedHeadSha: null,
+          activeStage: null,
+          activeConversationId: null,
+          reviewConversationId: null,
+        });
+      }
 
       const reviewerResponse = await runAgentStage(
         options,
         runState,
         "REVIEW",
-        buildReviewMessage(task, runState.pullRequestNumber),
+        buildReviewMessage(
+          task,
+          pullRequestNumber,
+          runState.reviewHeadSha ?? pullRequest.headRefOid,
+        ),
       );
       runState = loadSavedState(options.store, task.id);
 
@@ -236,6 +270,32 @@ export async function runWorkflow(
         },
       );
 
+      if (result.verdict === "APPROVED") {
+        const refreshedPullRequest =
+          await getValidatedPullRequest(
+            options,
+            github,
+            runState,
+            pullRequestNumber,
+          );
+
+        if (
+          refreshedPullRequest.headRefOid !== runState.reviewHeadSha
+        ) {
+          runState = saveState(options.store, {
+            ...runState,
+            lastReviewerVerdict: result.verdict,
+            workflowState: "REVIEWING",
+            reviewHeadSha: null,
+            approvedHeadSha: null,
+            activeStage: null,
+            activeConversationId: null,
+            reviewConversationId: null,
+          });
+          continue;
+        }
+      }
+
       runState = saveState(options.store, {
         ...runState,
         lastReviewerVerdict: result.verdict,
@@ -244,6 +304,10 @@ export async function runWorkflow(
             ? reviewerResponse
             : runState.reviewerFeedback,
         workflowState: result.nextState,
+        approvedHeadSha:
+          result.verdict === "APPROVED"
+            ? runState.reviewHeadSha
+            : runState.approvedHeadSha,
         activeStage: null,
         activeConversationId: null,
       });
@@ -251,6 +315,15 @@ export async function runWorkflow(
       console.log(`\nVerdict: ${result.verdict}`);
       console.log(`Next state: ${runState.workflowState}`);
 
+      continue;
+    }
+
+    if (runState.workflowState === "MERGING") {
+      runState = await mergeApprovedPullRequest(
+        options,
+        github,
+        runState,
+      );
       continue;
     }
   }
@@ -263,6 +336,195 @@ export async function runWorkflow(
   console.log("==============================");
 
   return runState;
+}
+
+async function mergeApprovedPullRequest(
+  options: RunWorkflowOptions,
+  github: GitHubClient,
+  runState: RunState,
+): Promise<RunState> {
+  if (runState.pullRequestNumber === null) {
+    persistFailed(options.store, runState);
+    throw new Error("Merge cannot start without a Pull Request number.");
+  }
+
+  if (runState.approvedHeadSha === null) {
+    persistFailed(options.store, runState);
+    throw new Error("Merge cannot start without an approved head SHA.");
+  }
+
+  const pullRequest = await getValidatedPullRequest(
+    options,
+    github,
+    runState,
+    runState.pullRequestNumber,
+    { allowMerged: true },
+  );
+
+  if (pullRequest.merged) {
+    if (pullRequest.headRefOid !== runState.approvedHeadSha) {
+      persistFailed(options.store, runState);
+      throw new Error(
+        `Pull Request #${pullRequest.number} is merged with head ${pullRequest.headRefOid}, expected approved head ${runState.approvedHeadSha}.`,
+      );
+    }
+
+    return saveState(options.store, {
+      ...runState,
+      workflowState: "DONE",
+      mergeCommitSha: pullRequest.mergeCommitSha,
+      activeStage: null,
+      activeConversationId: null,
+    });
+  }
+
+  if (pullRequest.state !== "OPEN") {
+    persistFailed(options.store, runState);
+    throw new Error(
+      `Pull Request #${pullRequest.number} must be open before merge.`,
+    );
+  }
+
+  if (pullRequest.headRefOid !== runState.approvedHeadSha) {
+    return saveState(options.store, {
+      ...runState,
+      workflowState: "REVIEWING",
+      reviewHeadSha: null,
+      approvedHeadSha: null,
+      activeStage: null,
+      activeConversationId: null,
+      reviewConversationId: null,
+    });
+  }
+
+  try {
+    const mergeResult = await github.mergePullRequest({
+      owner: options.task.repository.owner,
+      repo: options.task.repository.name,
+      pullRequestNumber: runState.pullRequestNumber,
+      expectedHeadSha: runState.approvedHeadSha,
+    });
+
+    const confirmedPullRequest = await github.getPullRequest({
+      owner: options.task.repository.owner,
+      repo: options.task.repository.name,
+      pullRequestNumber: runState.pullRequestNumber,
+    });
+    validatePullRequestForTask(options.task, confirmedPullRequest, {
+      allowMerged: true,
+    });
+
+    if (!confirmedPullRequest.merged) {
+      persistFailed(options.store, runState);
+      throw new Error(
+        `Pull Request #${runState.pullRequestNumber} was not confirmed as merged.`,
+      );
+    }
+
+    if (
+      confirmedPullRequest.headRefOid !== runState.approvedHeadSha
+    ) {
+      persistFailed(options.store, runState);
+      throw new Error(
+        `Pull Request #${runState.pullRequestNumber} merged with head ${confirmedPullRequest.headRefOid}, expected ${runState.approvedHeadSha}.`,
+      );
+    }
+
+    return saveState(options.store, {
+      ...runState,
+      workflowState: "DONE",
+      mergeCommitSha: mergeResult.mergeCommitSha,
+      activeStage: null,
+      activeConversationId: null,
+    });
+  } catch (error: unknown) {
+    let refreshedPullRequest: PullRequestDetails;
+
+    try {
+      refreshedPullRequest = await getValidatedPullRequest(
+        options,
+        github,
+        runState,
+        runState.pullRequestNumber,
+        { allowMerged: true },
+      );
+    } catch {
+      throw error;
+    }
+
+    if (refreshedPullRequest.headRefOid !== runState.approvedHeadSha) {
+      return saveState(options.store, {
+        ...runState,
+        workflowState: "REVIEWING",
+        reviewHeadSha: null,
+        approvedHeadSha: null,
+        activeStage: null,
+        activeConversationId: null,
+        reviewConversationId: null,
+      });
+    }
+
+    persistFailed(options.store, runState);
+    throw error;
+  }
+}
+
+async function getValidatedPullRequest(
+  options: RunWorkflowOptions,
+  github: GitHubClient,
+  runState: RunState,
+  pullRequestNumber: number,
+  validationOptions: { allowMerged?: boolean } = {},
+): Promise<PullRequestDetails> {
+  try {
+    const pullRequest = await github.getPullRequest({
+      owner: options.task.repository.owner,
+      repo: options.task.repository.name,
+      pullRequestNumber,
+    });
+    validatePullRequestForTask(
+      options.task,
+      pullRequest,
+      validationOptions,
+    );
+    return pullRequest;
+  } catch (error: unknown) {
+    persistFailed(options.store, runState);
+    throw error;
+  }
+}
+
+function validatePullRequestForTask(
+  task: WorkflowTask,
+  pullRequest: PullRequestDetails,
+  options: { allowMerged?: boolean } = {},
+): void {
+  if (
+    pullRequest.headRepositoryOwner !== task.repository.owner ||
+    pullRequest.headRepositoryName !== task.repository.name
+  ) {
+    throw new Error(
+      `Pull Request #${pullRequest.number} belongs to ${pullRequest.headRepositoryOwner}/${pullRequest.headRepositoryName}, expected ${repositoryName(task)}.`,
+    );
+  }
+
+  if (pullRequest.baseRefName !== task.baseBranch) {
+    throw new Error(
+      `Pull Request #${pullRequest.number} base is ${pullRequest.baseRefName}, expected ${task.baseBranch}.`,
+    );
+  }
+
+  if (pullRequest.headRefName !== task.workingBranch) {
+    throw new Error(
+      `Pull Request #${pullRequest.number} head is ${pullRequest.headRefName}, expected ${task.workingBranch}.`,
+    );
+  }
+
+  if (!options.allowMerged && pullRequest.merged) {
+    throw new Error(
+      `Pull Request #${pullRequest.number} is already merged.`,
+    );
+  }
 }
 
 function loadOrCreateRunState(
@@ -416,6 +678,7 @@ function deterministicConversationId(
     runState.taskId,
     stage,
     String(runState.implementationCycle),
+    stage === "REVIEW" ? String(runState.reviewAttempt) : "0",
   ].join(":");
   const bytes = createHash("sha256")
     .update(source)
@@ -531,7 +794,8 @@ async function main(): Promise<void> {
     requestedInitialState !== undefined &&
     requestedInitialState !== "PREPARING" &&
     requestedInitialState !== "IMPLEMENTING" &&
-    requestedInitialState !== "REVIEWING"
+    requestedInitialState !== "REVIEWING" &&
+    requestedInitialState !== "MERGING"
   ) {
     throw new Error(
       `Invalid OH_INITIAL_STATE: ${requestedInitialState}`,

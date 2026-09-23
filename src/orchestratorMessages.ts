@@ -167,6 +167,7 @@ Después puedes incluir un resumen breve de lo realizado.
 export function buildReviewMessage(
   task: WorkflowTask,
   pullRequestNumber: number,
+  headSha: string,
 ): string {
   return `
 Actúa exclusivamente como Reviewer.
@@ -179,6 +180,9 @@ ${repositoryName(task)}
 
 PULL REQUEST:
 #${pullRequestNumber}
+
+HEAD SHA BAJO REVISIÓN:
+${headSha}
 
 RAMA BASE:
 ${task.baseBranch}
@@ -197,7 +201,8 @@ Revisa el Pull Request contra el objetivo y TODOS los criterios de aceptación.
 Reglas:
 - trabaja en modo estrictamente read-only;
 - inspecciona el estado real del Pull Request;
-- usa el head actual del Pull Request;
+- revisa exactamente el HEAD SHA indicado arriba;
+- si GitHub muestra otro HEAD SHA, no apruebes la revisión;
 - no modifiques archivos;
 - no cambies ramas;
 - no hagas commits;
