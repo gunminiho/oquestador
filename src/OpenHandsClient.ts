@@ -9,11 +9,18 @@ export interface CreateConversationOptions {
   workspace: string;
   agentProfileId: string;
   message: string;
+  conversationId?: string;
 }
 
 export interface WaitOptions {
   pollIntervalMs?: number;
 }
+
+const FINISHED_STATUS = "finished";
+const TERMINAL_ERROR_STATUSES = new Set([
+  "error",
+  "stuck",
+]);
 
 export class OpenHandsClient {
   constructor(
@@ -31,6 +38,7 @@ export class OpenHandsClient {
           working_dir: options.workspace,
           kind: "LocalWorkspace",
         },
+        conversation_id: options.conversationId,
         agent_profile_id: options.agentProfileId,
         initial_message: {
           role: "user",
@@ -66,8 +74,18 @@ export class OpenHandsClient {
       try {
         const conversation = await this.getConversation(conversationId);
 
-        if (conversation.execution_status === "finished") {
+        if (conversation.execution_status === FINISHED_STATUS) {
           return conversation;
+        }
+
+        if (
+          TERMINAL_ERROR_STATUSES.has(
+            conversation.execution_status,
+          )
+        ) {
+          throw new Error(
+            `Conversation ${conversationId} ended with terminal status ${conversation.execution_status}.`,
+          );
         }
 
         const now = Date.now();

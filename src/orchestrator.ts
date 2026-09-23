@@ -1,4 +1,19 @@
-﻿import { OpenHandsClient } from "./OpenHandsClient";
+import { createHash } from "node:crypto";
+
+import { OpenHandsClient } from "./OpenHandsClient";
+import {
+  buildImplementationMessage,
+  buildPreparationMessage,
+  buildReviewMessage,
+  repositoryName,
+} from "./orchestratorMessages";
+import {
+  createInitialRunState,
+  type RunState,
+  RunStateStore,
+  type WorkflowStage,
+} from "./runState";
+import type { WorkflowTask } from "./task";
 import { loadWorkflowTask } from "./taskLoader";
 import {
   nextStateAfterReview,
@@ -7,6 +22,36 @@ import {
   parseReviewerVerdict,
   type WorkflowState,
 } from "./workflow";
+
+interface AgentClient {
+  createConversation(options: {
+    workspace: string;
+    agentProfileId: string;
+    message: string;
+    conversationId?: string;
+  }): Promise<{ id: string }>;
+
+  getConversation(conversationId: string): Promise<{
+    id: string;
+    execution_status: string;
+  }>;
+
+  waitUntilFinished(
+    conversationId: string,
+    options?: { pollIntervalMs?: number },
+  ): Promise<{ id: string; execution_status: string }>;
+
+  getFinalResponse(conversationId: string): Promise<string>;
+}
+
+interface RunWorkflowOptions {
+  client: AgentClient;
+  task: WorkflowTask;
+  store: RunStateStore;
+  agentProfileId: string;
+  initialStateOverride?: WorkflowState;
+  pollIntervalMs?: number;
+}
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -18,41 +63,467 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-async function runAgent(
-  client: OpenHandsClient,
-  workspace: string,
+export async function runWorkflow(
+  options: RunWorkflowOptions,
+): Promise<RunState> {
+  const task = options.task;
+  let runState = loadOrCreateRunState(options);
+
+  task.pullRequestNumber =
+    runState.pullRequestNumber ?? undefined;
+
+  console.log("================================");
+  console.log(`Task: ${task.id}`);
+  console.log(`Repository: ${repositoryName(task)}`);
+  console.log(
+    runState.pullRequestNumber !== null
+      ? `PR: #${runState.pullRequestNumber}`
+      : "PR: pending creation",
+  );
+  console.log(`Branch: ${task.workingBranch}`);
+  console.log("================================");
+
+  while (
+    runState.workflowState !== "DONE" &&
+    runState.workflowState !== "FAILED"
+  ) {
+    console.log("\n==============================");
+    console.log(`State: ${runState.workflowState}`);
+    const displayedCycle =
+      runState.workflowState === "IMPLEMENTING" &&
+      runState.activeStage !== "IMPLEMENTATION"
+        ? runState.implementationCycle + 1
+        : runState.implementationCycle;
+    console.log(
+      `Implementation cycle: ${displayedCycle}`,
+    );
+    console.log("==============================\n");
+
+    if (runState.workflowState === "PREPARING") {
+      const preparationResponse = await runAgentStage(
+        options,
+        runState,
+        "PREPARATION",
+        buildPreparationMessage(task),
+      );
+      runState = loadSavedState(options.store, task.id);
+
+      console.log("--- Preparation response ---\n");
+      console.log(preparationResponse);
+
+      runState = persistFailedOnError(
+        options.store,
+        runState,
+        () => {
+          parsePreparationResult(preparationResponse);
+          return runState;
+        },
+      );
+
+      runState = saveState(options.store, {
+        ...runState,
+        workflowState: "IMPLEMENTING",
+        activeStage: null,
+        activeConversationId: null,
+      });
+
+      console.log("\nPreparation: READY");
+      console.log(`Next state: ${runState.workflowState}`);
+
+      continue;
+    }
+
+    if (runState.workflowState === "IMPLEMENTING") {
+      if (runState.activeStage !== "IMPLEMENTATION") {
+        runState = saveState(options.store, {
+          ...runState,
+          implementationCycle:
+            runState.implementationCycle + 1,
+          activeStage: "IMPLEMENTATION",
+          activeConversationId: null,
+        });
+      }
+
+      const implementationResponse = await runAgentStage(
+        options,
+        runState,
+        "IMPLEMENTATION",
+        buildImplementationMessage(
+          task,
+          runState.reviewerFeedback,
+          runState.pullRequestNumber,
+        ),
+      );
+      runState = loadSavedState(options.store, task.id);
+
+      console.log("--- Implementer response ---\n");
+      console.log(implementationResponse);
+
+      runState = persistFailedOnError(
+        options.store,
+        runState,
+        () => {
+          const implementationResult =
+            parseImplementationResult(implementationResponse);
+
+          if (
+            implementationResult.pullRequestNumber !== undefined &&
+            runState.pullRequestNumber !==
+              implementationResult.pullRequestNumber
+          ) {
+            runState = saveState(options.store, {
+              ...runState,
+              pullRequestNumber:
+                implementationResult.pullRequestNumber,
+            });
+          }
+
+          if (runState.pullRequestNumber === null) {
+            throw new Error(
+              "Implementation finished without a Pull Request number.",
+            );
+          }
+
+          return runState;
+        },
+      );
+
+      task.pullRequestNumber =
+        runState.pullRequestNumber ?? undefined;
+
+      runState = saveState(options.store, {
+        ...runState,
+        reviewerFeedback: null,
+        workflowState: "REVIEWING",
+        activeStage: null,
+        activeConversationId: null,
+      });
+
+      continue;
+    }
+
+    if (runState.workflowState === "REVIEWING") {
+      if (runState.pullRequestNumber === null) {
+        runState = persistFailed(options.store, runState);
+        throw new Error(
+          "Review cannot start without a Pull Request number.",
+        );
+      }
+
+      const reviewerResponse = await runAgentStage(
+        options,
+        runState,
+        "REVIEW",
+        buildReviewMessage(task, runState.pullRequestNumber),
+      );
+      runState = loadSavedState(options.store, task.id);
+
+      console.log("--- Reviewer response ---\n");
+      console.log(reviewerResponse);
+
+      const result = persistFailedOnError(
+        options.store,
+        runState,
+        () => {
+          const verdict =
+            parseReviewerVerdict(reviewerResponse);
+          const nextState = nextStateAfterReview(verdict);
+
+          return {
+            verdict,
+            nextState,
+          };
+        },
+      );
+
+      runState = saveState(options.store, {
+        ...runState,
+        lastReviewerVerdict: result.verdict,
+        reviewerFeedback:
+          result.verdict === "CHANGES_REQUESTED"
+            ? reviewerResponse
+            : runState.reviewerFeedback,
+        workflowState: result.nextState,
+        activeStage: null,
+        activeConversationId: null,
+      });
+
+      console.log(`\nVerdict: ${result.verdict}`);
+      console.log(`Next state: ${runState.workflowState}`);
+
+      continue;
+    }
+  }
+
+  console.log("\n==============================");
+  console.log(`TASK: ${task.id}`);
+  console.log(
+    `WORKFLOW FINISHED: ${runState.workflowState}`,
+  );
+  console.log("==============================");
+
+  return runState;
+}
+
+function loadOrCreateRunState(
+  options: RunWorkflowOptions,
+): RunState {
+  const existing = options.store.load(options.task.id);
+
+  if (existing !== null) {
+    console.log(
+      `Resuming persisted RunState for task ${options.task.id}.`,
+    );
+    return existing;
+  }
+
+  const defaultInitialState: WorkflowState =
+    options.task.pullRequestNumber === undefined
+      ? "PREPARING"
+      : "IMPLEMENTING";
+  const workflowState =
+    options.initialStateOverride ?? defaultInitialState;
+
+  const runState = createInitialRunState(
+    options.task.id,
+    workflowState,
+    options.task.pullRequestNumber ?? null,
+  );
+
+  return saveState(options.store, runState);
+}
+
+async function runAgentStage(
+  options: RunWorkflowOptions,
+  runState: RunState,
+  stage: WorkflowStage,
   message: string,
 ): Promise<string> {
-  const conversation = await client.createConversation({
-    workspace,
-    agentProfileId: requiredEnv("OH_AGENT_PROFILE_ID"),
+  try {
+    let conversationId = getStageConversationId(
+      runState,
+      stage,
+    );
+
+    if (conversationId === null) {
+      conversationId = deterministicConversationId(
+        runState,
+        stage,
+      );
+
+      runState = saveState(options.store, {
+        ...runState,
+        activeStage: stage,
+        activeConversationId: conversationId,
+        ...stageConversationPatch(stage, conversationId),
+      });
+
+      const conversation =
+        await options.client.createConversation({
+          workspace: options.task.workspace,
+          agentProfileId: options.agentProfileId,
+          message,
+          conversationId,
+        });
+
+      assertConversationId(
+        conversation.id,
+        conversationId,
+      );
+
+      console.log(`Conversation: ${conversationId}`);
+    } else {
+      runState = saveState(options.store, {
+        ...runState,
+        activeStage: stage,
+        activeConversationId: conversationId,
+      });
+
+      console.log(
+        `Resuming conversation: ${conversationId}`,
+      );
+    }
+
+    const conversation = await getOrCreateConversation(
+      options,
+      conversationId,
+      message,
+    );
+
+    if (conversation.execution_status !== "finished") {
+      await options.client.waitUntilFinished(conversationId, {
+        pollIntervalMs: options.pollIntervalMs ?? 1000,
+      });
+    }
+
+    return options.client.getFinalResponse(conversationId);
+  } catch (error: unknown) {
+    runState = persistFailed(options.store, runState);
+
+    throw error;
+  }
+}
+
+async function getOrCreateConversation(
+  options: RunWorkflowOptions,
+  conversationId: string,
+  message: string,
+): Promise<{ id: string; execution_status: string }> {
+  try {
+    return await options.client.getConversation(conversationId);
+  } catch (error: unknown) {
+    if (!isMissingConversationError(error)) {
+      throw error;
+    }
+  }
+
+  const conversation = await options.client.createConversation({
+    workspace: options.task.workspace,
+    agentProfileId: options.agentProfileId,
     message,
+    conversationId,
   });
 
-  console.log(`Conversation: ${conversation.id}`);
+  assertConversationId(conversation.id, conversationId);
 
-  await client.waitUntilFinished(conversation.id, {
-    pollIntervalMs: 1000,
+  return options.client.getConversation(conversationId);
+}
+
+function assertConversationId(
+  actual: string,
+  expected: string,
+): void {
+  if (actual !== expected) {
+    throw new Error(
+      `OpenHands returned conversation ${actual}, expected ${expected}.`,
+    );
+  }
+}
+
+function isMissingConversationError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes("OpenHands API 404")
+  );
+}
+
+function deterministicConversationId(
+  runState: RunState,
+  stage: WorkflowStage,
+): string {
+  const source = [
+    "oquestador",
+    runState.taskId,
+    stage,
+    String(runState.implementationCycle),
+  ].join(":");
+  const bytes = createHash("sha256")
+    .update(source)
+    .digest()
+    .subarray(0, 16);
+
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+
+  const hex = bytes.toString("hex");
+
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
+}
+
+function getStageConversationId(
+  runState: RunState,
+  stage: WorkflowStage,
+): string | null {
+  if (
+    runState.activeStage === stage &&
+    runState.activeConversationId !== null
+  ) {
+    return runState.activeConversationId;
+  }
+
+  return null;
+}
+
+function stageConversationPatch(
+  stage: WorkflowStage,
+  conversationId: string,
+): Partial<Pick<
+  RunState,
+  | "preparationConversationId"
+  | "implementationConversationId"
+  | "reviewConversationId"
+>> {
+  switch (stage) {
+    case "PREPARATION":
+      return {
+        preparationConversationId: conversationId,
+      };
+    case "IMPLEMENTATION":
+      return {
+        implementationConversationId: conversationId,
+      };
+    case "REVIEW":
+      return {
+        reviewConversationId: conversationId,
+      };
+  }
+}
+
+function saveState(
+  store: RunStateStore,
+  state: RunState,
+): RunState {
+  store.save(state);
+  return loadSavedState(store, state.taskId);
+}
+
+function loadSavedState(
+  store: RunStateStore,
+  taskId: string,
+): RunState {
+  const loaded = store.load(taskId);
+
+  if (loaded === null) {
+    throw new Error(
+      `RunState was not saved for task ${taskId}.`,
+    );
+  }
+
+  return loaded;
+}
+
+function persistFailed(
+  store: RunStateStore,
+  runState: RunState,
+): RunState {
+  return saveState(store, {
+    ...runState,
+    workflowState: "FAILED",
+    activeStage: null,
+    activeConversationId: null,
   });
+}
 
-  return client.getFinalResponse(conversation.id);
+function persistFailedOnError<T>(
+  store: RunStateStore,
+  runState: RunState,
+  action: () => T,
+): T {
+  try {
+    return action();
+  } catch (error: unknown) {
+    persistFailed(store, runState);
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {
-  const client = new OpenHandsClient(
-    process.env.OH_BASE_URL ?? "http://localhost:8000",
-    requiredEnv("OH_SESSION_API_KEY"),
-  );
-
-  const task = loadWorkflowTask(
-    requiredEnv("WORKFLOW_TASK_FILE"),
-  );
-
-  const defaultInitialState: WorkflowState =
-    task.pullRequestNumber === undefined
-      ? "PREPARING"
-      : "IMPLEMENTING";
-
   const requestedInitialState =
     process.env.OH_INITIAL_STATE;
 
@@ -67,331 +538,31 @@ async function main(): Promise<void> {
     );
   }
 
-  let state: WorkflowState =
-    requestedInitialState ?? defaultInitialState;
-  let implementationCycle = 0;
-  let reviewerFeedback: string | null = null;
-
-  const repository =
-    `${task.repository.owner}/${task.repository.name}`;
-
-  const acceptanceCriteria = task.acceptanceCriteria
-    .map(
-      (criterion, index) =>
-        `${index + 1}. ${criterion}`,
-    )
-    .join("\n");
-
-  console.log("================================");
-  console.log(`Task: ${task.id}`);
-  console.log(`Repository: ${repository}`);
-  console.log(
-    task.pullRequestNumber !== undefined
-      ? `PR: #${task.pullRequestNumber}`
-      : "PR: pending creation",
+  const client = new OpenHandsClient(
+    process.env.OH_BASE_URL ?? "http://localhost:8000",
+    requiredEnv("OH_SESSION_API_KEY"),
   );
-  console.log(`Branch: ${task.workingBranch}`);
-  console.log("================================");
 
-  while (state !== "DONE" && state !== "FAILED") {
-    console.log("\n==============================");
-    console.log(`State: ${state}`);
-    console.log(
-      `Implementation cycle: ${implementationCycle + 1}/${task.maxReviewCycles}`,
-    );
-    console.log("==============================\n");
-
-    if (state === "PREPARING") {
-      const preparationResponse = await runAgent(
-        client,
-        task.workspace,
-        `
-Actúa exclusivamente como agente de preparación Git.
-
-TASK ID:
-${task.id}
-
-REPOSITORIO:
-${repository}
-
-RAMA BASE:
-${task.baseBranch}
-
-RAMA DE TRABAJO:
-${task.workingBranch}
-
-Tu única responsabilidad es dejar la rama de trabajo preparada.
-
-Procedimiento:
-- inspecciona el estado Git actual;
-- exige que el working tree esté limpio antes de continuar;
-- ejecuta fetch del remoto;
-- verifica que origin/${task.baseBranch} exista;
-- comprueba si ${task.workingBranch} ya existe localmente o en origin;
-- si ya existe, cámbiate a esa rama sin sobrescribir ni resetear trabajo existente;
-- si no existe, créala desde origin/${task.baseBranch};
-- publica la nueva rama en origin si todavía no existe remotamente;
-- verifica al final que HEAD esté en ${task.workingBranch}.
-
-No modifiques archivos del proyecto.
-No implementes la tarea.
-No crees Pull Requests.
-No hagas merge.
-No borres ni resetees una rama existente.
-
-Si la rama queda correctamente preparada, tu respuesta final debe contener exactamente:
-
-PREPARATION_RESULT: READY
-
-Después puedes incluir un resumen breve.
-`,
-      );
-
-      console.log("--- Preparation response ---\n");
-      console.log(preparationResponse);
-
-      parsePreparationResult(preparationResponse);
-
-      state = "IMPLEMENTING";
-
-      console.log("\nPreparation: READY");
-      console.log(`Next state: ${state}`);
-
-      continue;
-    }
-
-    if (state === "IMPLEMENTING") {
-      implementationCycle += 1;
-
-      if (
-        implementationCycle >
-        task.maxReviewCycles
-      ) {
-        state = "FAILED";
-        break;
-      }
-
-      const feedbackSection = reviewerFeedback
-        ? `
-El Reviewer anterior devolvió este feedback:
-
---- REVIEWER FEEDBACK ---
-${reviewerFeedback}
---- END REVIEWER FEEDBACK ---
-
-Debes atender específicamente ese feedback antes de devolver el trabajo a revisión.
-`
-        : `
-No existe feedback previo del Reviewer.
-
-Inspecciona el estado actual del Pull Request y determina qué falta para cumplir la tarea.
-`;
-
-      const pullRequestContext =
-        task.pullRequestNumber !== undefined
-          ? `
-Ya existe el Pull Request #${task.pullRequestNumber}.
-
-Debes trabajar sobre ese Pull Request.
-No abras otro Pull Request.
-`
-          : `
-Todavía NO existe Pull Request para esta tarea.
-
-Después de completar los cambios:
-- verifica el diff;
-- ejecuta las pruebas razonables relacionadas;
-- crea un commit descriptivo;
-- haz push a ${task.workingBranch};
-- comprueba si ya existe un Pull Request abierto desde ${task.workingBranch} hacia ${task.baseBranch};
-- si existe, reutilízalo;
-- si no existe, crea uno con gh pr create;
-- la base debe ser ${task.baseBranch};
-- el head debe ser ${task.workingBranch};
-- usa un título y descripción que reflejen la tarea;
-- NO hagas merge.
-
-Tu respuesta final deberá incluir también:
-
-PULL_REQUEST_NUMBER: <número real del PR>
-`;
-
-      const implementationResponse = await runAgent(
-        client,
-        task.workspace,
-        `
-Actúa exclusivamente como Implementador.
-
-TASK ID:
-${task.id}
-
-REPOSITORIO:
-${repository}
-
-PULL REQUEST:
-${pullRequestContext}
-
-RAMA BASE:
-${task.baseBranch}
-
-RAMA DE TRABAJO:
-${task.workingBranch}
-
-OBJETIVO:
-${task.objective}
-
-CRITERIOS DE ACEPTACIÓN:
-${acceptanceCriteria}
-
-${feedbackSection}
-
-Antes de modificar código:
-- verifica la rama actual;
-- confirma que estás trabajando sobre ${task.workingBranch};
-- si existe un Pull Request, inspecciónalo antes de modificar código;
-- inspecciona el estado actual del repositorio;
-- determina qué cambios son necesarios para satisfacer el objetivo y todos los criterios de aceptación.
-
-Si el trabajo ya cumple completamente:
-- no hagas modificaciones innecesarias;
-- no crees commits vacíos;
-- no hagas push innecesario.
-
-Si existen problemas o el Reviewer solicitó cambios:
-- realiza únicamente los cambios necesarios;
-- revisa cuidadosamente el diff;
-- ejecuta las verificaciones razonables relacionadas con el cambio;
-- crea un commit descriptivo;
-- haz push a ${task.workingBranch}.
-
-Nunca hagas merge.
-Nunca abras otro Pull Request.
-Nunca cambies la rama base.
-
-Tu respuesta final debe incluir exactamente:
-
-IMPLEMENTATION_RESULT: READY_FOR_REVIEW
-
-Después puedes incluir un resumen breve de lo realizado.
-`,
-      );
-
-      console.log(
-        "--- Implementer response ---\n",
-      );
-      console.log(implementationResponse);
-
-      const implementationResult =
-        parseImplementationResult(
-          implementationResponse,
-        );
-
-      if (
-        implementationResult.pullRequestNumber !==
-        undefined
-      ) {
-        task.pullRequestNumber =
-          implementationResult.pullRequestNumber;
-      }
-
-      if (task.pullRequestNumber === undefined) {
-        throw new Error(
-          "Implementation finished without a Pull Request number.",
-        );
-      }
-
-      reviewerFeedback = null;
-      state = "REVIEWING";
-      continue;
-    }
-
-    if (state === "REVIEWING") {
-      const reviewerResponse = await runAgent(
-        client,
-        task.workspace,
-        `
-Actúa exclusivamente como Reviewer.
-
-TASK ID:
-${task.id}
-
-REPOSITORIO:
-${repository}
-
-PULL REQUEST:
-#${task.pullRequestNumber}
-
-RAMA BASE:
-${task.baseBranch}
-
-RAMA DE TRABAJO:
-${task.workingBranch}
-
-OBJETIVO:
-${task.objective}
-
-CRITERIOS DE ACEPTACIÓN:
-${acceptanceCriteria}
-
-Revisa el Pull Request contra el objetivo y TODOS los criterios de aceptación.
-
-Reglas:
-- trabaja en modo estrictamente read-only;
-- inspecciona el estado real del Pull Request;
-- usa el head actual del Pull Request;
-- no modifiques archivos;
-- no cambies ramas;
-- no hagas commits;
-- no hagas push;
-- no hagas merge;
-- no publiques reviews ni comentarios en GitHub.
-
-Tu respuesta final DEBE contener exactamente uno de estos verdicts:
-
-REVIEW_VERDICT: APPROVED
-
-o
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-
-Usa APPROVED únicamente si el Pull Request satisface completamente el objetivo y todos los criterios de aceptación.
-
-Si utilizas CHANGES_REQUESTED, explica con precisión qué debe corregir el Implementador.
-`,
-      );
-
-      console.log(
-        "--- Reviewer response ---\n",
-      );
-      console.log(reviewerResponse);
-
-      const verdict =
-        parseReviewerVerdict(reviewerResponse);
-
-      if (verdict === "CHANGES_REQUESTED") {
-        reviewerFeedback = reviewerResponse;
-      }
-
-      state = nextStateAfterReview(verdict);
-
-      console.log(`\nVerdict: ${verdict}`);
-      console.log(`Next state: ${state}`);
-
-      continue;
-    }
-  }
-
-  console.log("\n==============================");
-  console.log(`TASK: ${task.id}`);
-  console.log(`WORKFLOW FINISHED: ${state}`);
-  console.log("==============================");
-
-  if (state === "FAILED") {
+  const task = loadWorkflowTask(
+    requiredEnv("WORKFLOW_TASK_FILE"),
+  );
+
+  const finalState = await runWorkflow({
+    client,
+    task,
+    store: new RunStateStore(),
+    agentProfileId: requiredEnv("OH_AGENT_PROFILE_ID"),
+    initialStateOverride: requestedInitialState,
+  });
+
+  if (finalState.workflowState === "FAILED") {
     process.exitCode = 1;
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

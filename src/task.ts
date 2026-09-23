@@ -17,7 +17,7 @@
 
   acceptanceCriteria: string[];
 
-  maxReviewCycles: number;
+  maxReviewCycles?: number;
 }
 
 export function validateWorkflowTask(
@@ -82,8 +82,11 @@ export function validateWorkflowTask(
   }
 
   if (
-    !Number.isInteger(task.maxReviewCycles) ||
-    task.maxReviewCycles <= 0
+    task.maxReviewCycles !== undefined &&
+    (
+      !Number.isInteger(task.maxReviewCycles) ||
+      task.maxReviewCycles <= 0
+    )
   ) {
     throw new Error(
       "WorkflowTask.maxReviewCycles must be a positive integer.",
