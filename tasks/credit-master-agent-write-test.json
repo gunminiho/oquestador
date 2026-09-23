@@ -1,0 +1,20 @@
+﻿{
+  "id": "credit-master-agent-write-test",
+  "repository": {
+    "owner": "gunminiho",
+    "name": "credit-master"
+  },
+  "workspace": "/projects/Credit_Master",
+  "baseBranch": "main",
+  "workingBranch": "agent/test-write",
+  "pullRequestNumber": 1,
+  "objective": "AGENT_WRITE_TEST.md debe contener únicamente la línea OpenHands Codex write test OK.",
+  "acceptanceCriteria": [
+    "El Pull Request debe modificar únicamente AGENT_WRITE_TEST.md.",
+    "AGENT_WRITE_TEST.md debe contener exactamente OpenHands Codex write test OK.",
+    "No debe existir texto adicional en el archivo.",
+    "El archivo debe terminar con un salto de línea.",
+    "No se debe hacer merge del Pull Request."
+  ],
+  "maxReviewCycles": 3
+}
