@@ -103,6 +103,7 @@ export async function runWorkflow(
         "PREPARATION",
         buildPreparationMessage(task),
       );
+      runState = loadSavedState(options.store, task.id);
 
       console.log("--- Preparation response ---\n");
       console.log(preparationResponse);
@@ -129,8 +130,7 @@ export async function runWorkflow(
           implementationCycle:
             runState.implementationCycle + 1,
           activeStage: "IMPLEMENTATION",
-          activeConversationId:
-            runState.implementationConversationId,
+          activeConversationId: null,
         });
       }
 
@@ -157,6 +157,7 @@ export async function runWorkflow(
           runState.pullRequestNumber,
         ),
       );
+      runState = loadSavedState(options.store, task.id);
 
       console.log("--- Implementer response ---\n");
       console.log(implementationResponse);
@@ -221,6 +222,7 @@ export async function runWorkflow(
         "REVIEW",
         buildReviewMessage(task, runState.pullRequestNumber),
       );
+      runState = loadSavedState(options.store, task.id);
 
       console.log("--- Reviewer response ---\n");
       console.log(reviewerResponse);
@@ -399,11 +401,18 @@ function saveState(
   state: RunState,
 ): RunState {
   store.save(state);
-  const loaded = store.load(state.taskId);
+  return loadSavedState(store, state.taskId);
+}
+
+function loadSavedState(
+  store: RunStateStore,
+  taskId: string,
+): RunState {
+  const loaded = store.load(taskId);
 
   if (loaded === null) {
     throw new Error(
-      `RunState was not saved for task ${state.taskId}.`,
+      `RunState was not saved for task ${taskId}.`,
     );
   }
 

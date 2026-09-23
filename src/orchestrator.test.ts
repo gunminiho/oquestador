@@ -16,6 +16,7 @@ class FakeClient {
   waitCount = 0;
   finalCount = 0;
   messages: string[] = [];
+  reviewVerdicts: string[] = ["APPROVED"];
   statuses = new Map<string, string>();
   responses = new Map<string, string>();
 
@@ -26,7 +27,7 @@ class FakeClient {
     this.messages.push(options.message);
     const id = `conversation-${this.createCount}`;
     this.statuses.set(id, "finished");
-    this.responses.set(id, responseForMessage(options.message));
+    this.responses.set(id, this.responseForMessage(options.message));
     return { id };
   }
 
@@ -63,15 +64,29 @@ class FakeClient {
 
     return response;
   }
+
+  private responseForMessage(message: string): string {
+    if (message.includes("Actúa exclusivamente como Reviewer")) {
+      const verdict =
+        this.reviewVerdicts.shift() ?? "APPROVED";
+
+      if (verdict === "CHANGES_REQUESTED") {
+        return [
+          "REVIEW_VERDICT: CHANGES_REQUESTED",
+          "Please update the tests for the resumed cycle.",
+        ].join("\n");
+      }
+
+      return "REVIEW_VERDICT: APPROVED";
+    }
+
+    return responseForMessage(message);
+  }
 }
 
 function responseForMessage(message: string): string {
   if (message.includes("agente de preparación Git")) {
     return "PREPARATION_RESULT: READY";
-  }
-
-  if (message.includes("Actúa exclusivamente como Reviewer")) {
-    return "REVIEW_VERDICT: APPROVED";
   }
 
   if (message.includes("Implementador")) {
@@ -168,6 +183,37 @@ test("resumes from REVIEWING preserving Pull Request number", async () => {
   assert.equal(finalState.pullRequestNumber, 55);
   assert.equal(client.createCount, 1);
   assert.match(client.messages[0] ?? "", /#55/);
+});
+
+test("creates a new implementation conversation after reviewer requests changes", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  client.reviewVerdicts = ["CHANGES_REQUESTED", "APPROVED"];
+
+  const finalState = await runWorkflow({
+    client,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  const implementationMessages = client.messages.filter((message) =>
+    message.includes("Actúa exclusivamente como Implementador."),
+  );
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(finalState.implementationCycle, 2);
+  assert.equal(finalState.pullRequestNumber, 123);
+  assert.equal(implementationMessages.length, 2);
+  assert.match(
+    implementationMessages[1] ?? "",
+    /Please update the tests for the resumed cycle/,
+  );
+  assert.equal(
+    store.load("workflow-task")?.implementationConversationId,
+    "conversation-4",
+  );
 });
 
 test("reuses an active persisted conversation instead of creating a second one", async () => {
