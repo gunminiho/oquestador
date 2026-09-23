@@ -17,6 +17,12 @@ class FakeClient {
   finalCount = 0;
   messages: string[] = [];
   reviewVerdicts: string[] = ["APPROVED"];
+  reviewCount = 0;
+  preparationResponse = "PREPARATION_RESULT: READY";
+  implementationResponse = [
+    "IMPLEMENTATION_RESULT: READY_FOR_REVIEW",
+    "PULL_REQUEST_NUMBER: 123",
+  ].join("\n");
   statuses = new Map<string, string>();
   responses = new Map<string, string>();
 
@@ -75,31 +81,32 @@ class FakeClient {
     if (message.includes("Actúa exclusivamente como Reviewer")) {
       const verdict =
         this.reviewVerdicts.shift() ?? "APPROVED";
+      this.reviewCount += 1;
 
       if (verdict === "CHANGES_REQUESTED") {
         return [
           "REVIEW_VERDICT: CHANGES_REQUESTED",
-          "Please update the tests for the resumed cycle.",
+          `Please update the tests for review ${this.reviewCount}.`,
         ].join("\n");
       }
 
-      return "REVIEW_VERDICT: APPROVED";
+      return `REVIEW_VERDICT: ${verdict}`;
     }
 
-    return responseForMessage(message);
+    return responseForMessage.call(this, message);
   }
 }
 
-function responseForMessage(message: string): string {
+function responseForMessage(
+  this: FakeClient,
+  message: string,
+): string {
   if (message.includes("agente de preparación Git")) {
-    return "PREPARATION_RESULT: READY";
+    return this.preparationResponse;
   }
 
   if (message.includes("Implementador")) {
-    return [
-      "IMPLEMENTATION_RESULT: READY_FOR_REVIEW",
-      "PULL_REQUEST_NUMBER: 123",
-    ].join("\n");
+    return this.implementationResponse;
   }
 
   throw new Error("Unknown message");
@@ -214,12 +221,53 @@ test("creates a new implementation conversation after reviewer requests changes"
   assert.equal(implementationMessages.length, 2);
   assert.match(
     implementationMessages[1] ?? "",
-    /Please update the tests for the resumed cycle/,
+    /Please update the tests for review 1/,
   );
   assert.equal(
     typeof store.load("workflow-task")
       ?.implementationConversationId,
     "string",
+  );
+});
+
+test("continues through repeated requested changes until reviewer approves", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  client.reviewVerdicts = [
+    "CHANGES_REQUESTED",
+    "CHANGES_REQUESTED",
+    "CHANGES_REQUESTED",
+    "CHANGES_REQUESTED",
+    "CHANGES_REQUESTED",
+    "APPROVED",
+  ];
+
+  const finalState = await runWorkflow({
+    client,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  const implementationMessages = client.messages.filter((message) =>
+    message.includes("Actúa exclusivamente como Implementador."),
+  );
+  const reviewMessages = client.messages.filter((message) =>
+    message.includes("Actúa exclusivamente como Reviewer"),
+  );
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(finalState.implementationCycle, 6);
+  assert.equal(implementationMessages.length, 6);
+  assert.equal(reviewMessages.length, 6);
+  assert.match(
+    implementationMessages[1] ?? "",
+    /Please update the tests for review 1/,
+  );
+  assert.match(
+    implementationMessages[5] ?? "",
+    /Please update the tests for review 5/,
   );
 });
 
@@ -410,4 +458,71 @@ test("persists FAILED when a resumed conversation fails", async () => {
     store.load("workflow-task")?.workflowState,
     "FAILED",
   );
+});
+
+test("persists FAILED when preparation final response is invalid", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  client.preparationResponse = "PREPARATION_RESULT: NOT_READY";
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      task: task(),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    /Expected exactly one PREPARATION_RESULT/,
+  );
+
+  const saved = store.load("workflow-task");
+  assert.equal(saved?.workflowState, "FAILED");
+  assert.equal(saved?.activeStage, null);
+  assert.equal(saved?.activeConversationId, null);
+});
+
+test("persists FAILED when implementation final response is invalid", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  client.implementationResponse =
+    "IMPLEMENTATION_RESULT: NOT_READY";
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      task: task(),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    /Expected exactly one IMPLEMENTATION_RESULT/,
+  );
+
+  const saved = store.load("workflow-task");
+  assert.equal(saved?.workflowState, "FAILED");
+  assert.equal(saved?.activeStage, null);
+  assert.equal(saved?.activeConversationId, null);
+});
+
+test("persists FAILED when reviewer final response is invalid", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  client.reviewVerdicts = ["INVALID"];
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      task: task(),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    /Expected exactly one REVIEW_VERDICT/,
+  );
+
+  const saved = store.load("workflow-task");
+  assert.equal(saved?.workflowState, "FAILED");
+  assert.equal(saved?.activeStage, null);
+  assert.equal(saved?.activeConversationId, null);
 });

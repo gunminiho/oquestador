@@ -95,7 +95,7 @@ export async function runWorkflow(
         ? runState.implementationCycle + 1
         : runState.implementationCycle;
     console.log(
-      `Implementation cycle: ${displayedCycle}/${task.maxReviewCycles}`,
+      `Implementation cycle: ${displayedCycle}`,
     );
     console.log("==============================\n");
 
@@ -111,7 +111,14 @@ export async function runWorkflow(
       console.log("--- Preparation response ---\n");
       console.log(preparationResponse);
 
-      parsePreparationResult(preparationResponse);
+      runState = persistFailedOnError(
+        options.store,
+        runState,
+        () => {
+          parsePreparationResult(preparationResponse);
+          return runState;
+        },
+      );
 
       runState = saveState(options.store, {
         ...runState,
@@ -137,19 +144,6 @@ export async function runWorkflow(
         });
       }
 
-      if (
-        runState.implementationCycle >
-        task.maxReviewCycles
-      ) {
-        runState = saveState(options.store, {
-          ...runState,
-          workflowState: "FAILED",
-          activeStage: null,
-          activeConversationId: null,
-        });
-        break;
-      }
-
       const implementationResponse = await runAgentStage(
         options,
         runState,
@@ -165,35 +159,37 @@ export async function runWorkflow(
       console.log("--- Implementer response ---\n");
       console.log(implementationResponse);
 
-      const implementationResult =
-        parseImplementationResult(implementationResponse);
+      runState = persistFailedOnError(
+        options.store,
+        runState,
+        () => {
+          const implementationResult =
+            parseImplementationResult(implementationResponse);
 
-      if (
-        implementationResult.pullRequestNumber !== undefined &&
-        runState.pullRequestNumber !==
-          implementationResult.pullRequestNumber
-      ) {
-        runState = saveState(options.store, {
-          ...runState,
-          pullRequestNumber:
-            implementationResult.pullRequestNumber,
-        });
-      }
+          if (
+            implementationResult.pullRequestNumber !== undefined &&
+            runState.pullRequestNumber !==
+              implementationResult.pullRequestNumber
+          ) {
+            runState = saveState(options.store, {
+              ...runState,
+              pullRequestNumber:
+                implementationResult.pullRequestNumber,
+            });
+          }
 
-      if (runState.pullRequestNumber === null) {
-        runState = saveState(options.store, {
-          ...runState,
-          workflowState: "FAILED",
-          activeStage: null,
-          activeConversationId: null,
-        });
+          if (runState.pullRequestNumber === null) {
+            throw new Error(
+              "Implementation finished without a Pull Request number.",
+            );
+          }
 
-        throw new Error(
-          "Implementation finished without a Pull Request number.",
-        );
-      }
+          return runState;
+        },
+      );
 
-      task.pullRequestNumber = runState.pullRequestNumber;
+      task.pullRequestNumber =
+        runState.pullRequestNumber ?? undefined;
 
       runState = saveState(options.store, {
         ...runState,
@@ -208,12 +204,7 @@ export async function runWorkflow(
 
     if (runState.workflowState === "REVIEWING") {
       if (runState.pullRequestNumber === null) {
-        runState = saveState(options.store, {
-          ...runState,
-          workflowState: "FAILED",
-          activeStage: null,
-          activeConversationId: null,
-        });
+        runState = persistFailed(options.store, runState);
         throw new Error(
           "Review cannot start without a Pull Request number.",
         );
@@ -230,23 +221,34 @@ export async function runWorkflow(
       console.log("--- Reviewer response ---\n");
       console.log(reviewerResponse);
 
-      const verdict =
-        parseReviewerVerdict(reviewerResponse);
-      const nextState = nextStateAfterReview(verdict);
+      const result = persistFailedOnError(
+        options.store,
+        runState,
+        () => {
+          const verdict =
+            parseReviewerVerdict(reviewerResponse);
+          const nextState = nextStateAfterReview(verdict);
+
+          return {
+            verdict,
+            nextState,
+          };
+        },
+      );
 
       runState = saveState(options.store, {
         ...runState,
-        lastReviewerVerdict: verdict,
+        lastReviewerVerdict: result.verdict,
         reviewerFeedback:
-          verdict === "CHANGES_REQUESTED"
+          result.verdict === "CHANGES_REQUESTED"
             ? reviewerResponse
             : runState.reviewerFeedback,
-        workflowState: nextState,
+        workflowState: result.nextState,
         activeStage: null,
         activeConversationId: null,
       });
 
-      console.log(`\nVerdict: ${verdict}`);
+      console.log(`\nVerdict: ${result.verdict}`);
       console.log(`Next state: ${runState.workflowState}`);
 
       continue;
@@ -356,12 +358,7 @@ async function runAgentStage(
 
     return options.client.getFinalResponse(conversationId);
   } catch (error: unknown) {
-    runState = saveState(options.store, {
-      ...runState,
-      workflowState: "FAILED",
-      activeStage: null,
-      activeConversationId: null,
-    });
+    runState = persistFailed(options.store, runState);
 
     throw error;
   }
@@ -499,6 +496,31 @@ function loadSavedState(
   }
 
   return loaded;
+}
+
+function persistFailed(
+  store: RunStateStore,
+  runState: RunState,
+): RunState {
+  return saveState(store, {
+    ...runState,
+    workflowState: "FAILED",
+    activeStage: null,
+    activeConversationId: null,
+  });
+}
+
+function persistFailedOnError<T>(
+  store: RunStateStore,
+  runState: RunState,
+  action: () => T,
+): T {
+  try {
+    return action();
+  } catch (error: unknown) {
+    persistFailed(store, runState);
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {
