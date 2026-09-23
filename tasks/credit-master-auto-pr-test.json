@@ -1,0 +1,19 @@
+﻿{
+  "id": "credit-master-auto-pr-test",
+  "repository": {
+    "owner": "gunminiho",
+    "name": "credit-master"
+  },
+  "workspace": "/projects/Credit_Master",
+  "baseBranch": "main",
+  "workingBranch": "agent/test-auto-pr-v1",
+  "objective": "Crear AGENT_AUTO_PR_TEST.md con una única línea: OpenHands automatic PR test OK",
+  "acceptanceCriteria": [
+    "El Pull Request debe modificar únicamente AGENT_AUTO_PR_TEST.md.",
+    "AGENT_AUTO_PR_TEST.md debe contener exactamente OpenHands automatic PR test OK.",
+    "No debe existir texto adicional en el archivo.",
+    "El archivo debe terminar con un salto de línea.",
+    "No se debe hacer merge del Pull Request."
+  ],
+  "maxReviewCycles": 3
+}

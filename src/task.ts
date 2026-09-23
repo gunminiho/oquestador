@@ -11,7 +11,7 @@
   baseBranch: string;
   workingBranch: string;
 
-  pullRequestNumber: number;
+  pullRequestNumber?: number;
 
   objective: string;
 
@@ -58,11 +58,14 @@ export function validateWorkflowTask(
   }
 
   if (
-    !Number.isInteger(task.pullRequestNumber) ||
-    task.pullRequestNumber <= 0
+    task.pullRequestNumber !== undefined &&
+    (
+      !Number.isInteger(task.pullRequestNumber) ||
+      task.pullRequestNumber <= 0
+    )
   ) {
     throw new Error(
-      "WorkflowTask.pullRequestNumber must be a positive integer.",
+      "WorkflowTask.pullRequestNumber must be a positive integer when provided.",
     );
   }
 
@@ -87,3 +90,4 @@ export function validateWorkflowTask(
     );
   }
 }
+

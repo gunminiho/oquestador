@@ -2,6 +2,8 @@
 import { loadWorkflowTask } from "./taskLoader";
 import {
   nextStateAfterReview,
+  parseImplementationResult,
+  parsePreparationResult,
   parseReviewerVerdict,
   type WorkflowState,
 } from "./workflow";
@@ -47,19 +49,27 @@ async function main(): Promise<void> {
     requiredEnv("WORKFLOW_TASK_FILE"),
   );
 
-  const initialState =
-    process.env.OH_INITIAL_STATE ?? "IMPLEMENTING";
+  const defaultInitialState: WorkflowState =
+    task.pullRequestNumber === undefined
+      ? "PREPARING"
+      : "IMPLEMENTING";
+
+  const requestedInitialState =
+    process.env.OH_INITIAL_STATE;
 
   if (
-    initialState !== "IMPLEMENTING" &&
-    initialState !== "REVIEWING"
+    requestedInitialState !== undefined &&
+    requestedInitialState !== "PREPARING" &&
+    requestedInitialState !== "IMPLEMENTING" &&
+    requestedInitialState !== "REVIEWING"
   ) {
     throw new Error(
-      `Invalid OH_INITIAL_STATE: ${initialState}`,
+      `Invalid OH_INITIAL_STATE: ${requestedInitialState}`,
     );
   }
 
-  let state: WorkflowState = initialState;
+  let state: WorkflowState =
+    requestedInitialState ?? defaultInitialState;
   let implementationCycle = 0;
   let reviewerFeedback: string | null = null;
 
@@ -76,7 +86,11 @@ async function main(): Promise<void> {
   console.log("================================");
   console.log(`Task: ${task.id}`);
   console.log(`Repository: ${repository}`);
-  console.log(`PR: #${task.pullRequestNumber}`);
+  console.log(
+    task.pullRequestNumber !== undefined
+      ? `PR: #${task.pullRequestNumber}`
+      : "PR: pending creation",
+  );
   console.log(`Branch: ${task.workingBranch}`);
   console.log("================================");
 
@@ -87,6 +101,65 @@ async function main(): Promise<void> {
       `Implementation cycle: ${implementationCycle + 1}/${task.maxReviewCycles}`,
     );
     console.log("==============================\n");
+
+    if (state === "PREPARING") {
+      const preparationResponse = await runAgent(
+        client,
+        task.workspace,
+        `
+Actúa exclusivamente como agente de preparación Git.
+
+TASK ID:
+${task.id}
+
+REPOSITORIO:
+${repository}
+
+RAMA BASE:
+${task.baseBranch}
+
+RAMA DE TRABAJO:
+${task.workingBranch}
+
+Tu única responsabilidad es dejar la rama de trabajo preparada.
+
+Procedimiento:
+- inspecciona el estado Git actual;
+- exige que el working tree esté limpio antes de continuar;
+- ejecuta fetch del remoto;
+- verifica que origin/${task.baseBranch} exista;
+- comprueba si ${task.workingBranch} ya existe localmente o en origin;
+- si ya existe, cámbiate a esa rama sin sobrescribir ni resetear trabajo existente;
+- si no existe, créala desde origin/${task.baseBranch};
+- publica la nueva rama en origin si todavía no existe remotamente;
+- verifica al final que HEAD esté en ${task.workingBranch}.
+
+No modifiques archivos del proyecto.
+No implementes la tarea.
+No crees Pull Requests.
+No hagas merge.
+No borres ni resetees una rama existente.
+
+Si la rama queda correctamente preparada, tu respuesta final debe contener exactamente:
+
+PREPARATION_RESULT: READY
+
+Después puedes incluir un resumen breve.
+`,
+      );
+
+      console.log("--- Preparation response ---\n");
+      console.log(preparationResponse);
+
+      parsePreparationResult(preparationResponse);
+
+      state = "IMPLEMENTING";
+
+      console.log("\nPreparation: READY");
+      console.log(`Next state: ${state}`);
+
+      continue;
+    }
 
     if (state === "IMPLEMENTING") {
       implementationCycle += 1;
@@ -115,6 +188,35 @@ No existe feedback previo del Reviewer.
 Inspecciona el estado actual del Pull Request y determina qué falta para cumplir la tarea.
 `;
 
+      const pullRequestContext =
+        task.pullRequestNumber !== undefined
+          ? `
+Ya existe el Pull Request #${task.pullRequestNumber}.
+
+Debes trabajar sobre ese Pull Request.
+No abras otro Pull Request.
+`
+          : `
+Todavía NO existe Pull Request para esta tarea.
+
+Después de completar los cambios:
+- verifica el diff;
+- ejecuta las pruebas razonables relacionadas;
+- crea un commit descriptivo;
+- haz push a ${task.workingBranch};
+- comprueba si ya existe un Pull Request abierto desde ${task.workingBranch} hacia ${task.baseBranch};
+- si existe, reutilízalo;
+- si no existe, crea uno con gh pr create;
+- la base debe ser ${task.baseBranch};
+- el head debe ser ${task.workingBranch};
+- usa un título y descripción que reflejen la tarea;
+- NO hagas merge.
+
+Tu respuesta final deberá incluir también:
+
+PULL_REQUEST_NUMBER: <número real del PR>
+`;
+
       const implementationResponse = await runAgent(
         client,
         task.workspace,
@@ -128,7 +230,7 @@ REPOSITORIO:
 ${repository}
 
 PULL REQUEST:
-#${task.pullRequestNumber}
+${pullRequestContext}
 
 RAMA BASE:
 ${task.baseBranch}
@@ -147,7 +249,7 @@ ${feedbackSection}
 Antes de modificar código:
 - verifica la rama actual;
 - confirma que estás trabajando sobre ${task.workingBranch};
-- inspecciona el Pull Request #${task.pullRequestNumber};
+- si existe un Pull Request, inspecciónalo antes de modificar código;
 - inspecciona el estado actual del repositorio;
 - determina qué cambios son necesarios para satisfacer el objetivo y todos los criterios de aceptación.
 
@@ -180,13 +282,22 @@ Después puedes incluir un resumen breve de lo realizado.
       );
       console.log(implementationResponse);
 
+      const implementationResult =
+        parseImplementationResult(
+          implementationResponse,
+        );
+
       if (
-        !implementationResponse.includes(
-          "IMPLEMENTATION_RESULT: READY_FOR_REVIEW",
-        )
+        implementationResult.pullRequestNumber !==
+        undefined
       ) {
+        task.pullRequestNumber =
+          implementationResult.pullRequestNumber;
+      }
+
+      if (task.pullRequestNumber === undefined) {
         throw new Error(
-          "Implementer did not return IMPLEMENTATION_RESULT: READY_FOR_REVIEW",
+          "Implementation finished without a Pull Request number.",
         );
       }
 
@@ -285,4 +396,15 @@ main().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });
+
+
+
+
+
+
+
+
+
+
+
 
