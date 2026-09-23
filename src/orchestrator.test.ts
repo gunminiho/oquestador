@@ -22,10 +22,12 @@ class FakeClient {
 
   async createConversation(options: {
     message: string;
+    conversationId?: string;
   }): Promise<{ id: string }> {
     this.createCount += 1;
     this.messages.push(options.message);
-    const id = `conversation-${this.createCount}`;
+    const id =
+      options.conversationId ?? `conversation-${this.createCount}`;
     this.statuses.set(id, "finished");
     this.responses.set(id, this.responseForMessage(options.message));
     return { id };
@@ -34,6 +36,10 @@ class FakeClient {
   async getConversation(
     conversationId: string,
   ): Promise<{ id: string; execution_status: string }> {
+    if (!this.statuses.has(conversationId)) {
+      throw new Error("OpenHands API 404 Not Found");
+    }
+
     return {
       id: conversationId,
       execution_status:
@@ -211,9 +217,82 @@ test("creates a new implementation conversation after reviewer requests changes"
     /Please update the tests for the resumed cycle/,
   );
   assert.equal(
-    store.load("workflow-task")?.implementationConversationId,
-    "conversation-4",
+    typeof store.load("workflow-task")
+      ?.implementationConversationId,
+    "string",
   );
+});
+
+test("persists the stage conversation id before creating the remote conversation", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const createConversation =
+    client.createConversation.bind(client);
+  let inspectedFirstCreate = false;
+
+  client.createConversation = async (options) => {
+    if (!inspectedFirstCreate) {
+      inspectedFirstCreate = true;
+      const saved = store.load("workflow-task");
+
+      assert.equal(
+        saved?.activeStage,
+        "PREPARATION",
+      );
+      assert.equal(
+        saved?.activeConversationId,
+        options.conversationId,
+      );
+      assert.equal(
+        saved?.preparationConversationId,
+        options.conversationId,
+      );
+    }
+
+    return createConversation(options);
+  };
+
+  const finalState = await runWorkflow({
+    client,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(inspectedFirstCreate, true);
+});
+
+test("recreates a missing remote conversation with the persisted deterministic id", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const persistedConversationId =
+    "11111111-1111-5111-8111-111111111111";
+
+  store.save({
+    ...createInitialRunState("workflow-task", "IMPLEMENTING", null),
+    implementationCycle: 1,
+    activeStage: "IMPLEMENTATION",
+    activeConversationId: persistedConversationId,
+    implementationConversationId: persistedConversationId,
+  });
+
+  const finalState = await runWorkflow({
+    client,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(client.createCount, 2);
+  assert.equal(
+    store.load("workflow-task")?.implementationConversationId,
+    persistedConversationId,
+  );
+  assert.equal(finalState.pullRequestNumber, 123);
 });
 
 test("reuses an active persisted conversation instead of creating a second one", async () => {

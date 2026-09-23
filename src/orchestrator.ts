@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { OpenHandsClient } from "./OpenHandsClient";
 import {
   buildImplementationMessage,
@@ -26,6 +28,7 @@ interface AgentClient {
     workspace: string;
     agentProfileId: string;
     message: string;
+    conversationId?: string;
   }): Promise<{ id: string }>;
 
   getConversation(conversationId: string): Promise<{
@@ -301,10 +304,16 @@ async function runAgentStage(
     );
 
     if (conversationId === null) {
+      conversationId = deterministicConversationId(
+        runState,
+        stage,
+      );
+
       runState = saveState(options.store, {
         ...runState,
         activeStage: stage,
-        activeConversationId: null,
+        activeConversationId: conversationId,
+        ...stageConversationPatch(stage, conversationId),
       });
 
       const conversation =
@@ -312,15 +321,13 @@ async function runAgentStage(
           workspace: options.task.workspace,
           agentProfileId: options.agentProfileId,
           message,
+          conversationId,
         });
 
-      conversationId = conversation.id;
-
-      runState = saveState(options.store, {
-        ...runState,
-        activeConversationId: conversationId,
-        ...stageConversationPatch(stage, conversationId),
-      });
+      assertConversationId(
+        conversation.id,
+        conversationId,
+      );
 
       console.log(`Conversation: ${conversationId}`);
     } else {
@@ -335,8 +342,11 @@ async function runAgentStage(
       );
     }
 
-    const conversation =
-      await options.client.getConversation(conversationId);
+    const conversation = await getOrCreateConversation(
+      options,
+      conversationId,
+      message,
+    );
 
     if (conversation.execution_status !== "finished") {
       await options.client.waitUntilFinished(conversationId, {
@@ -355,6 +365,78 @@ async function runAgentStage(
 
     throw error;
   }
+}
+
+async function getOrCreateConversation(
+  options: RunWorkflowOptions,
+  conversationId: string,
+  message: string,
+): Promise<{ id: string; execution_status: string }> {
+  try {
+    return await options.client.getConversation(conversationId);
+  } catch (error: unknown) {
+    if (!isMissingConversationError(error)) {
+      throw error;
+    }
+  }
+
+  const conversation = await options.client.createConversation({
+    workspace: options.task.workspace,
+    agentProfileId: options.agentProfileId,
+    message,
+    conversationId,
+  });
+
+  assertConversationId(conversation.id, conversationId);
+
+  return options.client.getConversation(conversationId);
+}
+
+function assertConversationId(
+  actual: string,
+  expected: string,
+): void {
+  if (actual !== expected) {
+    throw new Error(
+      `OpenHands returned conversation ${actual}, expected ${expected}.`,
+    );
+  }
+}
+
+function isMissingConversationError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes("OpenHands API 404")
+  );
+}
+
+function deterministicConversationId(
+  runState: RunState,
+  stage: WorkflowStage,
+): string {
+  const source = [
+    "oquestador",
+    runState.taskId,
+    stage,
+    String(runState.implementationCycle),
+  ].join(":");
+  const bytes = createHash("sha256")
+    .update(source)
+    .digest()
+    .subarray(0, 16);
+
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+
+  const hex = bytes.toString("hex");
+
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join("-");
 }
 
 function getStageConversationId(

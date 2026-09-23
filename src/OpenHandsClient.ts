@@ -9,6 +9,7 @@ export interface CreateConversationOptions {
   workspace: string;
   agentProfileId: string;
   message: string;
+  conversationId?: string;
 }
 
 export interface WaitOptions {
@@ -37,6 +38,7 @@ export class OpenHandsClient {
           working_dir: options.workspace,
           kind: "LocalWorkspace",
         },
+        conversation_id: options.conversationId,
         agent_profile_id: options.agentProfileId,
         initial_message: {
           role: "user",
