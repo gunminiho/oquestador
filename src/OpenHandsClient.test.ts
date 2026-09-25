@@ -69,13 +69,8 @@ test(
     );
 
     assert.equal(
-      result.execution_status,
-      "running",
-    );
-
-    assert.equal(
       calls,
-      1,
+      2,
     );
   },
 );
@@ -380,9 +375,15 @@ test(
       result.id,
       "fixed-id",
     );
+
+    assert.equal(
+      result.execution_status,
+      "running",
+    );
+
     assert.equal(
       calls,
-      2,
+      1,
     );
   },
 );
