@@ -1,4 +1,4 @@
-﻿export interface WorkflowTask {
+export interface WorkflowTask {
   id: string;
 
   repository: {
@@ -7,16 +7,11 @@
   };
 
   workspace: string;
-
   baseBranch: string;
   workingBranch: string;
-
   pullRequestNumber?: number;
-
   objective: string;
-
   acceptanceCriteria: string[];
-
   maxReviewCycles?: number;
 }
 
@@ -25,6 +20,12 @@ export function validateWorkflowTask(
 ): void {
   if (!task.id.trim()) {
     throw new Error("WorkflowTask.id is required.");
+  }
+
+  if (!/^[A-Za-z0-9._-]+$/.test(task.id)) {
+    throw new Error(
+      "WorkflowTask.id may only contain letters, numbers, dots, underscores, and hyphens.",
+    );
   }
 
   if (!task.repository.owner.trim()) {
@@ -93,4 +94,3 @@ export function validateWorkflowTask(
     );
   }
 }
-
