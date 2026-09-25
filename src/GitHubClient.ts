@@ -59,12 +59,37 @@ export interface GitHubClient {
   }>;
 }
 
+export interface GitHubCommandExecutor {
+  exec(
+    file: string,
+    args: string[],
+  ): Promise<{
+    stdout: string;
+  }>;
+
+  execWithInput(
+    file: string,
+    args: string[],
+    input: string,
+  ): Promise<void>;
+}
+
+const DEFAULT_COMMAND_EXECUTOR:
+  GitHubCommandExecutor = {
+    exec: execText,
+    execWithInput:
+      spawnWithInput,
+  };
+
 export class GhCliGitHubClient
 implements GitHubClient {
   constructor(
     private readonly agentContainerName =
       process.env.OH_AGENT_CONTAINER ??
       "openhands-canvas",
+    private readonly commands:
+      GitHubCommandExecutor =
+        DEFAULT_COMMAND_EXECUTOR,
   ) {}
 
   async getPullRequest(options: {
@@ -73,7 +98,7 @@ implements GitHubClient {
     pullRequestNumber: number;
   }): Promise<PullRequestDetails> {
     const { stdout } =
-      await execFileAsync(
+      await this.commands.exec(
         "gh",
         [
           "pr",
@@ -147,7 +172,7 @@ implements GitHubClient {
     pullRequestNumber: number;
     expectedHeadSha: string;
   }): Promise<MergePullRequestResult> {
-    await execFileAsync(
+    await this.commands.exec(
       "gh",
       [
         "pr",
@@ -182,7 +207,7 @@ implements GitHubClient {
       branch: string;
     },
   ): Promise<void> {
-    await execFileAsync(
+    await this.commands.exec(
       "docker",
       [
         "exec",
@@ -197,7 +222,7 @@ implements GitHubClient {
 
     const {
       stdout: statusStdout,
-    } = await execFileAsync(
+    } = await this.commands.exec(
       "docker",
       [
         "exec",
@@ -221,7 +246,7 @@ implements GitHubClient {
 
     const {
       stdout: remoteStdout,
-    } = await execFileAsync(
+    } = await this.commands.exec(
       "docker",
       [
         "exec",
@@ -249,7 +274,7 @@ implements GitHubClient {
 
     const {
       stdout: tokenStdout,
-    } = await execFileAsync(
+    } = await this.commands.exec(
       "gh",
       [
         "auth",
@@ -272,25 +297,26 @@ implements GitHubClient {
       'cred="$(mktemp)"',
       "trap 'rm -f \"$cred\"' EXIT",
       "printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=%s\\n\\n' \"$TOKEN\" | git credential-store --file=\"$cred\" store",
-      'git -C "$WORKSPACE" -c credential.helper="store --file=$cred" push --set-upstream origin "HEAD:refs/heads/$BRANCH"',
+      'git -C "$WORKSPACE" -c credential.helper="store --file=$cred" push origin "HEAD:refs/heads/$BRANCH"',
     ].join("\n");
 
-    await spawnWithInput(
-      "docker",
-      [
-        "exec",
-        "-i",
-        "-e",
-        `WORKSPACE=${options.workspace}`,
-        "-e",
-        `BRANCH=${options.branch}`,
-        this.agentContainerName,
-        "sh",
-        "-lc",
-        script,
-      ],
-      `${token}\n`,
-    );
+    await this.commands
+      .execWithInput(
+        "docker",
+        [
+          "exec",
+          "-i",
+          "-e",
+          `WORKSPACE=${options.workspace}`,
+          "-e",
+          `BRANCH=${options.branch}`,
+          this.agentContainerName,
+          "sh",
+          "-lc",
+          script,
+        ],
+        `${token}\n`,
+      );
   }
 
   async ensurePullRequest(
@@ -331,7 +357,7 @@ implements GitHubClient {
       };
     }
 
-    await execFileAsync(
+    await this.commands.exec(
       "gh",
       [
         "pr",
@@ -376,7 +402,7 @@ implements GitHubClient {
     headBranch: string,
   ): Promise<number[]> {
     const { stdout } =
-      await execFileAsync(
+      await this.commands.exec(
         "gh",
         [
           "pr",
@@ -405,6 +431,27 @@ implements GitHubClient {
       (item) => item.number,
     );
   }
+}
+
+async function execText(
+  file: string,
+  args: string[],
+): Promise<{
+  stdout: string;
+}> {
+  const {
+    stdout,
+  } = await execFileAsync(
+    file,
+    args,
+    {
+      encoding: "utf8",
+    },
+  );
+
+  return {
+    stdout,
+  };
 }
 
 async function spawnWithInput(
