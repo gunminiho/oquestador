@@ -1,11 +1,13 @@
 import asyncio
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
+from importlib.metadata import version
 from pathlib import Path
 
 
@@ -77,7 +79,9 @@ async def _apply_acp_model(
                 config_id=config_id, value=value, session_id=session_id
             )
     elif hasattr(conn, "set_session_model"):
-        await conn.set_session_model(model_id=model, session_id=session_id)
+        await conn.set_session_model(  # type: ignore[attr-defined]
+            model_id=model, session_id=session_id
+        )
 
 
 async def _maybe_set_session_model(
@@ -149,6 +153,8 @@ class FakeACPConnection:
         self.config_options.append((config_id, value, session_id))
 
     async def set_session_model(self, *, model_id: str, session_id: str) -> None:
+        if "/" in model_id:
+            raise AssertionError(f"combined model leaked to provider: {model_id}")
         self.session_models.append((model_id, session_id))
 
     async def new_session(self, **kwargs: object) -> object:
@@ -267,11 +273,175 @@ class ClaudeEffortPatchTest(unittest.TestCase):
             ],
         )
 
+    def test_claude_legacy_session_model_path_uses_base_model(self) -> None:
+        initial_conn = FakeACPConnection()
+        asyncio.run(
+            self.module._maybe_set_session_model(
+                initial_conn,
+                "claude-code",
+                "initial-session",
+                "opus[1m]/high",
+                via_config_option=False,
+            )
+        )
+        self.assertEqual(initial_conn.session_models, [("opus[1m]", "initial-session")])
+
+        runtime_conn = FakeACPConnection()
+        asyncio.run(
+            self.module._apply_acp_model(
+                runtime_conn,
+                "runtime-session",
+                "opus[1m]/max",
+                agent_name="claude-code",
+                via_config_option=False,
+            )
+        )
+        self.assertEqual(runtime_conn.session_models, [("opus[1m]", "runtime-session")])
+
+        resume_conn = FakeACPConnection()
+        asyncio.run(
+            self.module._reapply_session_model_on_resume(
+                resume_conn,
+                "claude-code",
+                "resume-session",
+                "sonnet/medium",
+                via_config_option=False,
+            )
+        )
+        self.assertEqual(resume_conn.session_models, [("sonnet", "resume-session")])
+
     def test_codex_regression_model_reasoning_effort(self) -> None:
         self.assertEqual(
             self.module._model_config_options("codex", "gpt-5.6-sol/high"),
             (("model", "gpt-5.6-sol"), ("reasoning_effort", "high")),
         )
+        conn = FakeACPConnection()
+        asyncio.run(
+            self.module._apply_acp_model(
+                conn,
+                "codex-session",
+                "gpt-5.6-sol/high",
+                agent_name="codex",
+                via_config_option=True,
+            )
+        )
+        self.assertEqual(
+            conn.config_options,
+            [
+                ("model", "gpt-5.6-sol", "codex-session"),
+                ("reasoning_effort", "high", "codex-session"),
+            ],
+        )
+
+
+class InstalledOpenHandsSDKPatchTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.target = Path(self.tmp.name) / "acp_agent.py"
+
+        env = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1"}
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path; "
+                    "import openhands.sdk.agent.acp_agent as acp; "
+                    "print(Path(acp.__file__).resolve())"
+                ),
+            ],
+            cwd=REPO_DIR,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        installed_acp_agent = Path(proc.stdout.strip().splitlines()[-1])
+        shutil.copyfile(installed_acp_agent, self.target)
+
+        patch_env = {
+            **env,
+            "PATCH_TARGET": str(self.target),
+        }
+        subprocess.run(
+            [sys.executable, str(PATCH_SCRIPT)],
+            cwd=REPO_DIR,
+            env=patch_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.module = load_module(self.target)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_patch_targets_exact_sdk_version(self) -> None:
+        self.assertEqual(version("openhands-sdk"), "1.49.4")
+
+    def test_real_sdk_copy_splits_claude_initial_runtime_and_resume_paths(self):
+        self.assertEqual(
+            self.module._model_config_options("claude-agent", "opus[1m]/high"),
+            (("model", "opus[1m]"), ("effort", "high")),
+        )
+
+        session_model = self.module._model_config_options(
+            "claude-agent", "opus[1m]/high"
+        )[0][1]
+        self.assertEqual(
+            self.module.build_session_model_meta("claude-agent", session_model),
+            {"claudeCode": {"options": {"model": "opus[1m]"}}},
+        )
+
+        runtime_conn = FakeACPConnection()
+        asyncio.run(
+            self.module._apply_acp_model(
+                runtime_conn,
+                "runtime-session",
+                "opus[1m]/high",
+                agent_name="claude-agent",
+                via_config_option=True,
+            )
+        )
+        self.assertEqual(
+            runtime_conn.config_options,
+            [
+                ("model", "opus[1m]", "runtime-session"),
+                ("effort", "high", "runtime-session"),
+            ],
+        )
+
+        resume_conn = FakeACPConnection()
+        asyncio.run(
+            self.module._reapply_session_model_on_resume(
+                resume_conn,
+                "claude-agent",
+                "resume-session",
+                "opus[1m]/max",
+                via_config_option=True,
+            )
+        )
+        self.assertEqual(
+            resume_conn.config_options,
+            [
+                ("model", "opus[1m]", "resume-session"),
+                ("effort", "max", "resume-session"),
+            ],
+        )
+
+        legacy_conn = FakeACPConnection()
+        asyncio.run(
+            self.module._apply_acp_model(
+                legacy_conn,
+                "legacy-session",
+                "opus[1m]/high",
+                agent_name="claude-agent",
+                via_config_option=False,
+            )
+        )
+        self.assertEqual(legacy_conn.session_models, [("opus[1m]", "legacy-session")])
+
+    def test_real_sdk_copy_preserves_codex_reasoning_effort(self) -> None:
         conn = FakeACPConnection()
         asyncio.run(
             self.module._apply_acp_model(
