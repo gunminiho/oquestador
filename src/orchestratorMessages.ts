@@ -39,11 +39,11 @@ El orquestador ya creó o recuperó un workspace aislado y ya se encargó de pub
 
 Procedimiento:
 - inspecciona el estado Git actual;
-- verifica que HEAD esté en ${task.workingBranch};
+- verifica que HEAD sea válido dentro del worktree aislado; el worktree puede estar en detached HEAD por diseño;
 - verifica que el working tree esté limpio;
 - ejecuta fetch de origin si es necesario para validar referencias;
 - verifica que origin/${task.baseBranch} exista;
-- no cambies de rama;
+- no cambies de rama ni crees una rama local;
 - no crees ramas;
 - no hagas push;
 - no modifiques archivos del proyecto;
@@ -127,7 +127,7 @@ ${formatAcceptanceCriteria(task)}
 ${feedbackSection}
 
 Antes de modificar código:
-- verifica que estás en ${task.workingBranch};
+- verifica que estás dentro del workspace aislado correcto; el worktree puede estar en detached HEAD por diseño;
 - inspecciona el estado actual del repositorio;
 - determina qué cambios son necesarios para satisfacer el objetivo y todos los criterios.
 
