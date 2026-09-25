@@ -28,6 +28,18 @@ function task(): WorkflowTask {
   };
 }
 
+const WORKTREE_ROOT =
+  "/projects/.orchestrator-worktrees";
+
+function expectedWorktree(
+  value = task(),
+): string {
+  return worktreePathForTask(
+    WORKTREE_ROOT,
+    value,
+  );
+}
+
 class FakeDocker {
   readonly calls:
     string[][] = [];
@@ -138,7 +150,57 @@ test(
         "/projects/.orchestrator-worktrees/",
         "task-1",
       ),
-      "/projects/.orchestrator-worktrees/task-1",
+      expectedWorktree(),
+    );
+  },
+);
+
+test(
+  "worktree path changes when repository or branch identity changes",
+  () => {
+    const base =
+      worktreePathForTask(
+        WORKTREE_ROOT,
+        task(),
+      );
+
+    const otherBranch =
+      worktreePathForTask(
+        WORKTREE_ROOT,
+        {
+          ...task(),
+          workingBranch:
+            "feat/other",
+        },
+      );
+
+    const otherRepo =
+      worktreePathForTask(
+        WORKTREE_ROOT,
+        {
+          ...task(),
+          repository: {
+            owner:
+              "gunminiho",
+            name:
+              "another-repo",
+          },
+        },
+      );
+
+    assert.notEqual(
+      base,
+      otherBranch,
+    );
+
+    assert.notEqual(
+      base,
+      otherRepo,
+    );
+
+    assert.match(
+      base,
+      /\/task-1-[0-9a-f]{12}$/,
     );
   },
 );
@@ -150,7 +212,10 @@ test(
       () =>
         worktreePathForTask(
           "/projects/.orchestrator-worktrees",
-          "../escape",
+          {
+            ...task(),
+            id: "../escape",
+          },
         ),
       /unsafe/,
     );
@@ -177,7 +242,7 @@ test(
 
     assert.equal(
       prepared.workspace,
-      "/projects/.orchestrator-worktrees/task-1",
+      expectedWorktree(),
     );
 
     const worktreeAdd =
@@ -277,7 +342,7 @@ test(
 
     assert.equal(
       prepared.workspace,
-      "/projects/.orchestrator-worktrees/task-1",
+      expectedWorktree(),
     );
 
     assert.equal(
@@ -308,7 +373,7 @@ test(
     const cleaned =
       await manager.cleanup({
         workspace:
-          "/projects/.orchestrator-worktrees/task-1",
+          expectedWorktree(),
         sourceWorkspace:
           "/projects/oquestador",
         workingBranch:
@@ -353,7 +418,7 @@ test(
     const cleaned =
       await manager.cleanup({
         workspace:
-          "/projects/.orchestrator-worktrees/task-1",
+          expectedWorktree(),
         sourceWorkspace:
           "/projects/oquestador",
         workingBranch:
