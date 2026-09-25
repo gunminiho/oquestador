@@ -35,7 +35,7 @@ ${task.baseBranch}
 RAMA DE TRABAJO:
 ${task.workingBranch}
 
-El orquestador ya creó o recuperó un workspace aislado y ya se encargó de publicar la rama remota. Tu responsabilidad es únicamente validar de forma segura que el workspace está listo para implementación.
+El orquestador ya creó o recuperó un workspace aislado. La publicación de la rama remota ocurrirá después de una implementación válida, para que un workspace recuperado con trabajo local no se pierda ni bloquee antes de que el agente pueda reanudarlo. Tu responsabilidad es únicamente validar de forma segura que el workspace está listo para implementación.
 
 Procedimiento:
 - inspecciona el estado Git actual;
