@@ -149,9 +149,10 @@ export class OpenHandsClient {
         error instanceof OpenHandsApiError &&
         error.status === 409
       ) {
-        return this.getConversation(
-          options.conversationId,
-        );
+        return {
+          id: options.conversationId,
+          execution_status: "running",
+        };
       }
 
       throw error;
