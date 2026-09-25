@@ -47,7 +47,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      3,
+      4,
     );
     assert.equal(
       loaded?.taskId,
@@ -75,6 +75,10 @@ test(
     );
     assert.equal(
       loaded?.reviewHeadSha,
+      null,
+    );
+    assert.equal(
+      loaded?.noChangesBaseSha,
       null,
     );
     assert.equal(
@@ -256,7 +260,7 @@ test(
 );
 
 test(
-  "migrates version 1 RunState through version 3",
+  "migrates version 1 RunState through version 4",
   () => {
     const dir =
       mkdtempSync(
@@ -313,7 +317,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      3,
+      4,
     );
     assert.equal(
       loaded?.reviewAttempt,
@@ -321,6 +325,10 @@ test(
     );
     assert.equal(
       loaded?.reviewHeadSha,
+      null,
+    );
+    assert.equal(
+      loaded?.noChangesBaseSha,
       null,
     );
     assert.equal(
@@ -398,7 +406,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      3,
+      4,
     );
     assert.equal(
       loaded?.preparationAttempt,
@@ -410,6 +418,61 @@ test(
     );
     assert.equal(
       loaded?.failureKind,
+      null,
+    );
+  },
+);
+
+test(
+  "migrates version 3 RunState by adding noChangesBaseSha",
+  () => {
+    const dir =
+      mkdtempSync(
+        join(
+          tmpdir(),
+          "run-state-test-",
+        ),
+      );
+
+    const store =
+      new RunStateStore(dir);
+
+    const current =
+      createInitialRunState(
+        "legacy-v3",
+        "REVIEWING",
+        null,
+      );
+
+    const {
+      noChangesBaseSha:
+        _noChangesBaseSha,
+      ...legacy
+    } = current;
+
+    writeFileSync(
+      join(
+        dir,
+        "legacy-v3.json",
+      ),
+      JSON.stringify({
+        ...legacy,
+        version: 3,
+      }),
+      "utf8",
+    );
+
+    const loaded =
+      store.load(
+        "legacy-v3",
+      );
+
+    assert.equal(
+      loaded?.version,
+      4,
+    );
+    assert.equal(
+      loaded?.noChangesBaseSha,
       null,
     );
   },
@@ -450,7 +513,7 @@ test(
         store.load(
           "future-task",
         ),
-      /version must be 3/,
+      /version must be 4/,
     );
   },
 );
