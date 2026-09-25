@@ -69,8 +69,13 @@ test(
     );
 
     assert.equal(
+      result.execution_status,
+      "running",
+    );
+
+    assert.equal(
       calls,
-      2,
+      1,
     );
   },
 );
@@ -319,7 +324,7 @@ test(
 );
 
 test(
-  "deterministic conversation creation recovers from a 409 by reading the existing id",
+  "deterministic conversation creation recovers from a 409 without a racy follow-up lookup",
   async () => {
     let calls = 0;
 
