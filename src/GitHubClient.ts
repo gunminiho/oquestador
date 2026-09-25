@@ -182,8 +182,21 @@ implements GitHubClient {
       branch: string;
     },
   ): Promise<void> {
+    await execFileAsync(
+      "docker",
+      [
+        "exec",
+        this.agentContainerName,
+        "git",
+        "-C",
+        options.workspace,
+        "rev-parse",
+        "HEAD",
+      ],
+    );
+
     const {
-      stdout: branchStdout,
+      stdout: statusStdout,
     } = await execFileAsync(
       "docker",
       [
@@ -192,17 +205,17 @@ implements GitHubClient {
         "git",
         "-C",
         options.workspace,
-        "branch",
-        "--show-current",
+        "status",
+        "--porcelain",
       ],
     );
 
     if (
-      branchStdout.trim() !==
-      options.branch
+      statusStdout.trim() !==
+      ""
     ) {
       throw new Error(
-        `Workspace ${options.workspace} is on ${branchStdout.trim()}, expected ${options.branch}.`,
+        `Workspace ${options.workspace} has uncommitted changes; refusing to publish the branch.`,
       );
     }
 
