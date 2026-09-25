@@ -44,6 +44,7 @@ interface AgentClient {
     conversationId?: string;
   }): Promise<{
     id: string;
+    execution_status?: string;
   }>;
 
   getConversation(
@@ -1245,6 +1246,8 @@ async function runAgentStage(
         id:
           createdConversation.id,
         execution_status:
+          createdConversation
+            .execution_status ??
           "running",
       };
 
