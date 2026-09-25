@@ -1,6 +1,8 @@
 import type { WorkflowTask } from "./task";
 
-export function repositoryName(task: WorkflowTask): string {
+export function repositoryName(
+  task: WorkflowTask,
+): string {
   return `${task.repository.owner}/${task.repository.name}`;
 }
 
@@ -8,7 +10,10 @@ export function formatAcceptanceCriteria(
   task: WorkflowTask,
 ): string {
   return task.acceptanceCriteria
-    .map((criterion, index) => `${index + 1}. ${criterion}`)
+    .map(
+      (criterion, index) =>
+        `${index + 1}. ${criterion}`,
+    )
     .join("\n");
 }
 
@@ -30,28 +35,31 @@ ${task.baseBranch}
 RAMA DE TRABAJO:
 ${task.workingBranch}
 
-Tu única responsabilidad es dejar la rama de trabajo preparada.
+El orquestador ya creó o recuperó un workspace aislado. La publicación de la rama remota ocurrirá después de una implementación válida, para que un workspace recuperado con trabajo local no se pierda ni bloquee antes de que el agente pueda reanudarlo. Tu responsabilidad es únicamente validar de forma segura que el workspace está listo para implementación.
 
 Procedimiento:
 - inspecciona el estado Git actual;
-- exige que el working tree esté limpio antes de continuar;
-- ejecuta fetch del remoto;
+- verifica que HEAD sea válido dentro del worktree aislado; el worktree puede estar en detached HEAD por diseño;
+- verifica que el working tree esté limpio;
+- ejecuta fetch de origin si es necesario para validar referencias;
 - verifica que origin/${task.baseBranch} exista;
-- comprueba si ${task.workingBranch} ya existe localmente o en origin;
-- si ya existe, cámbiate a esa rama sin sobrescribir ni resetear trabajo existente;
-- si no existe, créala desde origin/${task.baseBranch};
-- publica la nueva rama en origin si todavía no existe remotamente;
-- verifica al final que HEAD esté en ${task.workingBranch}.
+- no cambies de rama ni crees una rama local;
+- no crees ramas;
+- no hagas push;
+- no modifiques archivos del proyecto;
+- no implementes la tarea;
+- no crees Pull Requests;
+- no hagas merge;
+- no hagas reset ni stash.
 
-No modifiques archivos del proyecto.
-No implementes la tarea.
-No crees Pull Requests.
-No hagas merge.
-No borres ni resetees una rama existente.
-
-Si la rama queda correctamente preparada, tu respuesta final debe contener exactamente:
+Si todas las precondiciones están satisfechas, tu respuesta final debe contener exactamente:
 
 PREPARATION_RESULT: READY
+
+Si alguna precondición segura no puede satisfacerse, NO fuerces cambios. Tu respuesta final debe contener exactamente:
+
+PREPARATION_RESULT: BLOCKED
+PREPARATION_REASON: <razón concreta en una sola línea>
 
 Después puedes incluir un resumen breve.
 `;
@@ -62,8 +70,9 @@ export function buildImplementationMessage(
   reviewerFeedback: string | null,
   pullRequestNumber: number | null,
 ): string {
-  const feedbackSection = reviewerFeedback
-    ? `
+  const feedbackSection =
+    reviewerFeedback
+      ? `
 El Reviewer anterior devolvió este feedback:
 
 --- REVIEWER FEEDBACK ---
@@ -72,10 +81,10 @@ ${reviewerFeedback}
 
 Debes atender específicamente ese feedback antes de devolver el trabajo a revisión.
 `
-    : `
+      : `
 No existe feedback previo del Reviewer.
 
-Inspecciona el estado actual del Pull Request y determina qué falta para cumplir la tarea.
+Inspecciona el estado actual del repositorio y determina qué falta para cumplir la tarea.
 `;
 
   const pullRequestContext =
@@ -83,28 +92,12 @@ Inspecciona el estado actual del Pull Request y determina qué falta para cumpli
       ? `
 Ya existe el Pull Request #${pullRequestNumber}.
 
-Debes trabajar sobre ese Pull Request.
-No abras otro Pull Request.
+Trabaja sobre la misma rama y no abras otro Pull Request.
 `
       : `
-Todavía NO existe Pull Request para esta tarea.
+Todavía no existe Pull Request.
 
-Después de completar los cambios:
-- verifica el diff;
-- ejecuta las pruebas razonables relacionadas;
-- crea un commit descriptivo;
-- haz push a ${task.workingBranch};
-- comprueba si ya existe un Pull Request abierto desde ${task.workingBranch} hacia ${task.baseBranch};
-- si existe, reutilízalo;
-- si no existe, crea uno con gh pr create;
-- la base debe ser ${task.baseBranch};
-- el head debe ser ${task.workingBranch};
-- usa un título y descripción que reflejen la tarea;
-- NO hagas merge.
-
-Tu respuesta final deberá incluir también:
-
-PULL_REQUEST_NUMBER: <número real del PR>
+El orquestador publicará la rama y creará o reutilizará el Pull Request después de que termines.
 `;
 
   return `
@@ -134,31 +127,33 @@ ${formatAcceptanceCriteria(task)}
 ${feedbackSection}
 
 Antes de modificar código:
-- verifica la rama actual;
-- confirma que estás trabajando sobre ${task.workingBranch};
-- si existe un Pull Request, inspecciónalo antes de modificar código;
+- verifica que estás dentro del workspace aislado correcto; el worktree puede estar en detached HEAD por diseño;
 - inspecciona el estado actual del repositorio;
-- determina qué cambios son necesarios para satisfacer el objetivo y todos los criterios de aceptación.
+- determina qué cambios son necesarios para satisfacer el objetivo y todos los criterios.
 
 Si el trabajo ya cumple completamente:
 - no hagas modificaciones innecesarias;
-- no crees commits vacíos;
-- no hagas push innecesario.
+- no crees commits vacíos.
 
-Si existen problemas o el Reviewer solicitó cambios:
+Si existen cambios necesarios:
 - realiza únicamente los cambios necesarios;
 - revisa cuidadosamente el diff;
-- ejecuta las verificaciones razonables relacionadas con el cambio;
-- crea un commit descriptivo;
-- haz push a ${task.workingBranch}.
+- ejecuta las verificaciones razonables relacionadas;
+- crea un commit descriptivo local.
 
-Nunca hagas merge.
-Nunca abras otro Pull Request.
-Nunca cambies la rama base.
+El orquestador se encarga de publicar la rama y de crear o reutilizar el Pull Request.
+NO hagas git push.
+NO ejecutes gh pr create.
+NO hagas merge.
+NO cambies la rama base.
 
 Tu respuesta final debe incluir exactamente:
 
 IMPLEMENTATION_RESULT: READY_FOR_REVIEW
+
+Si conoces un Pull Request ya existente puedes incluir opcionalmente:
+
+PULL_REQUEST_NUMBER: <número>
 
 Después puedes incluir un resumen breve de lo realizado.
 `;
