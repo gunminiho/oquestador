@@ -28,9 +28,9 @@ The account reportedly had no Claude Pro quota during the smoke test. That can e
 
 ## Repository and runtime state checked
 
-For this v6 correction pass, the local worktree was the isolated orchestrator checkout `/projects/.orchestrator-worktrees/claude-acp-effort-root-cause-report-v6-567ef44dd924`, in detached HEAD by design. Before editing, `git status --short --branch` reported `## HEAD (no branch)` with no uncommitted changes, and `git rev-parse HEAD` returned `652221991406020cd51c735ed7663259a460f9c3`. The reviewer independently verified that `refs/heads/diag/claude-acp-effort-root-cause-v2` and `refs/pull/5/head` pointed to the same SHA under review.
+For this v6 correction pass, the local worktree was the isolated orchestrator checkout `/projects/.orchestrator-worktrees/claude-acp-effort-root-cause-report-v6-567ef44dd924`, in detached HEAD by design. Before editing, `git status --short --branch` reported `## HEAD (no branch)` with no uncommitted changes, and `git rev-parse HEAD` returned `9991bf0b6797edf35969fa25fa41a91c21e0b6dc`. The local `origin/diag/claude-acp-effort-root-cause-v2` ref pointed to the same SHA under review.
 
-The previous report-generation pass started from PR HEAD `adf76ad` (`docs: report Claude ACP effort root cause`), which matched the PR branch at that time. That is historical context for how the report was created; it is not the HEAD of this correction pass. The current PR HEAD before this correction is `652221991406020cd51c735ed7663259a460f9c3`.
+The previous report-generation pass started from PR HEAD `adf76ad` (`docs: report Claude ACP effort root cause`), which matched the PR branch at that time. A first review-correction pass then produced `652221991406020cd51c735ed7663259a460f9c3`. Both SHAs are historical context for how the report evolved; neither is the HEAD edited in this correction pass.
 
 The "repo state before the report existed" was earlier than `adf76ad`: this report branch was created on top of `c048cca` (`Merge pull request #4 from gunminiho/feat/claude-effort-support`). That earlier base state is distinct from the current PR HEAD being corrected here.
 
@@ -198,7 +198,7 @@ For `value="high"`, `toSdkEffortLevel` returns `"high"`.
 
 ### Local instrumentation of Claude ACP model resolution
 
-This local test imported the exported pure helpers from `claude-agent-acp` and did not start the Claude binary or send inference. The inspected package file was `/home/openhands/.npm/_npx/3e28e223a0aba92d/node_modules/@agentclientprotocol/claude-agent-acp/dist/acp-agent.js`.
+This local test imported the exported `ClaudeAcpAgent` class and helper functions from `claude-agent-acp` and did not start the Claude binary or send inference. The inspected package file was `/home/openhands/.npm/_npx/3e28e223a0aba92d/node_modules/@agentclientprotocol/claude-agent-acp/dist/acp-agent.js`.
 
 With normal SDK models only:
 
@@ -208,30 +208,31 @@ resolveModelPreference(models, "opus[1m]")      -> "opus"
 effort option includes high/max from Opus capabilities
 ```
 
-With an allowlist/custom model entry `["opus[1m]/high"]`, a no-inference local harness that imported `applyAvailableModelsAllowlist` and `buildConfigOptions` reported the values immediately before the ACP `model` and `effort` config options would call the SDK boundary:
+With an allowlist/custom model entry `["opus[1m]/high"]`, the harness reported:
 
 ```text
 applyAvailableModelsAllowlist(...).models contains value "opus[1m]/high"
 resolveModelPreference(models, "opus[1m]/high") -> "opus[1m]/high"
 resolveModelPreference(models, "opus[1m]")      -> "opus[1m]/high"
-model config option value                       -> "opus[1m]/high"
-effort option currentValue                      -> "high"
+ClaudeAcpAgent.setSessionConfigOption(... model ...) captured query.setModel("opus[1m]/high")
 ```
 
 With an allowlist/custom model entry `["opus[1m]"]`:
 
 ```text
-model config option value -> "opus[1m]"
-effort option currentValue -> "high"
+ClaudeAcpAgent.setSessionConfigOption(... model ...) captured query.setModel("opus[1m]")
+ClaudeAcpAgent.setSessionConfigOption(... effort ...) captured query.applyFlagSettings({"effortLevel":"high"})
 ```
 
-The exact temporary harness used for the SDK-boundary check was run with `node --input-type=module` and discarded afterward:
+The exact temporary harness used for the SDK-boundary check was run with `node --input-type=module` and discarded afterward. It instantiated the real `ClaudeAcpAgent`, injected fake in-memory session objects, monkeypatched only the fake session's `query.setModel` and `query.applyFlagSettings`, and then invoked the real `ClaudeAcpAgent.setSessionConfigOption` method. That means the capture point is immediately before the SDK boundary inside the production ACP method, without spawning Claude:
 
 ```js
 import {
+  ClaudeAcpAgent,
+  MODEL_CONFIG_ID,
+  EFFORT_CONFIG_ID,
   applyAvailableModelsAllowlist,
   buildConfigOptions,
-  resolveModelPreference,
 } from "/home/openhands/.npm/_npx/3e28e223a0aba92d/node_modules/@agentclientprotocol/claude-agent-acp/dist/acp-agent.js";
 
 const sdkModels = [
@@ -242,6 +243,7 @@ const sdkModels = [
     description: "Opus",
     supportsEffort: true,
     supportedEffortLevels: ["low", "medium", "high", "max"],
+    supportsAutoMode: true,
   },
   {
     value: "opus[1m]",
@@ -249,63 +251,115 @@ const sdkModels = [
     description: "Opus 1M",
     supportsEffort: true,
     supportedEffortLevels: ["low", "medium", "high", "max"],
+    supportsAutoMode: true,
   },
 ];
-
-const combinedModels = applyAvailableModelsAllowlist(sdkModels, ["opus[1m]/high"]);
-const combinedResolved = resolveModelPreference(combinedModels, "opus[1m]/high")?.value;
-const splitModels = applyAvailableModelsAllowlist(sdkModels, ["opus[1m]"]);
-const splitResolved = resolveModelPreference(splitModels, "opus[1m]")?.value;
-
-function optionsFor(modelId) {
-  return buildConfigOptions(
-    { currentModeId: "default", availableModes: [{ id: "default", name: "Default", description: "" }] },
-    { currentModelId: modelId, availableModels: [{ modelId, name: modelId, description: "" }] },
-    sdkModels,
-    "high",
-    [],
-  );
-}
-
-const captured = [];
-const query = {
-  async setModel(value) {
-    captured.push(["immediately-before-set_model", value]);
-  },
-  async applyFlagSettings(settings) {
-    captured.push(["immediately-before-apply_flag_settings", settings]);
-  },
+const modes = {
+  currentModeId: "default",
+  availableModes: [{ id: "default", name: "Default", description: "" }],
 };
 
-await query.setModel(combinedResolved);
-await query.setModel(splitResolved);
-await query.applyFlagSettings({
-  effortLevel: optionsFor(splitResolved).find((o) => o.id === "effort").currentValue,
+function makeSession(allowlist, currentModelId) {
+  const modelInfos = applyAvailableModelsAllowlist(sdkModels, allowlist);
+  const models = {
+    currentModelId,
+    availableModels: modelInfos.map((m) => ({
+      modelId: m.value,
+      name: m.displayName ?? m.value,
+      description: m.description ?? "",
+    })),
+  };
+  const captured = [];
+  return {
+    session: {
+      queryClosed: false,
+      query: {
+        async setModel(value) {
+          captured.push(["immediately-before-set_model", value]);
+        },
+        async applyFlagSettings(settings) {
+          captured.push(["immediately-before-apply_flag_settings", settings]);
+        },
+        async setPermissionMode(value) {
+          captured.push(["set_permission_mode", value]);
+        },
+      },
+      configOptions: buildConfigOptions(
+        modes,
+        models,
+        modelInfos,
+        "high",
+        [],
+        "default",
+        { supported: false, enabled: false, useBooleanOption: false },
+      ),
+      modelInfos,
+      models,
+      modes,
+      agents: [],
+      currentAgent: "default",
+      providerCacheKey: "test",
+      fastModeEnabled: false,
+    },
+    captured,
+  };
+}
+
+const agent = new ClaudeAcpAgent({ sessionUpdate: async () => {} }, console);
+agent.clientCapabilities = {};
+
+const combined = makeSession(["opus[1m]/high"], "opus[1m]/high");
+agent.sessions.combined = combined.session;
+await agent.setSessionConfigOption({
+  sessionId: "combined",
+  configId: MODEL_CONFIG_ID,
+  value: "opus[1m]/high",
 });
 
-console.log(JSON.stringify({ combinedResolved, splitResolved, captured }, null, 2));
+const split = makeSession(["opus[1m]"], "opus[1m]");
+agent.sessions.split = split.session;
+await agent.setSessionConfigOption({
+  sessionId: "split",
+  configId: MODEL_CONFIG_ID,
+  value: "opus[1m]",
+});
+await agent.setSessionConfigOption({
+  sessionId: "split",
+  configId: EFFORT_CONFIG_ID,
+  value: "high",
+});
+
+console.log(JSON.stringify({
+  combinedAvailable: combined.session.models.availableModels,
+  combinedCaptured: combined.captured,
+  splitAvailable: split.session.models.availableModels,
+  splitCaptured: split.captured,
+}, null, 2));
 ```
-
-The harness monkeypatched the two `@anthropic-ai/claude-agent-sdk` query methods that `claude-agent-acp` calls immediately before the SDK writes control requests:
-
-- `ClaudeAcpAgent.setSessionConfigOption` calls `this.sessions[sessionId].query.setModel(resolvedValue)` for `configId="model"` in `dist/acp-agent.js`.
-- `ClaudeAcpAgent.applyConfigOptionValue` calls `session.query.applyFlagSettings({ effortLevel: toSdkEffortLevel(newEffort) })` for effort changes in the same file.
 
 The sanitized output was:
 
 ```text
 {
-  "combinedResolved": "opus[1m]/high",
-  "splitResolved": "opus[1m]",
-  "captured": [
-    ["immediately-before-set_model", "opus[1m]/high"],
+  "combinedAvailable": [
+    {"modelId": "default", "name": "Default", "description": ""},
+    {"modelId": "opus[1m]/high", "name": "Opus", "description": "Opus"}
+  ],
+  "combinedCaptured": [
+    ["immediately-before-set_model", "opus[1m]/high"]
+  ],
+  "splitAvailable": [
+    {"modelId": "default", "name": "Default", "description": ""},
+    {"modelId": "opus[1m]", "name": "Opus 1M", "description": "Opus 1M"}
+  ],
+  "splitCaptured": [
     ["immediately-before-set_model", "opus[1m]"],
     ["immediately-before-apply_flag_settings", {"effortLevel": "high"}]
   ]
 }
 ```
 
-The first captured `setModel` value proves that the custom/allowlist route can preserve the combined `model/effort` string as the actual SDK `set_model` target. The second `setModel` value and `applyFlagSettings` value prove that after OpenHands splits the value, the intended Claude ACP boundary values are `setModel("opus[1m]")` and `applyFlagSettings({effortLevel:"high"})`. It does not prove which upstream settings/env source created the custom `opus[1m]/high` row in c20.
+The first captured `setModel` value proves by executing `ClaudeAcpAgent.setSessionConfigOption` that the custom/allowlist route can preserve the combined `model/effort` string as the actual SDK `set_model` target. The second `setModel` value and `applyFlagSettings` value prove by executing the same production method that after OpenHands splits the value, the intended Claude ACP boundary values are `setModel("opus[1m]")` and `applyFlagSettings({effortLevel:"high"})`. It does not prove which upstream settings/env source created the custom `opus[1m]/high` row in c20.
 
 ## Anthropic Claude Agent SDK and Claude binary flow
 
@@ -377,8 +431,8 @@ Therefore quota is a separate smoke-test blocker, not the demonstrated root caus
 | `build_session_model_meta` still sends the combined value in `session/new` `_meta`. | RULED_OUT | Installed code calls `_model_config_model_value` before `build_session_model_meta`; local instrumentation returns `{"claudeCode":{"options":{"model":"opus[1m]"}}}`. |
 | `claude-agent-acp` can surface `opus[1m]/high` in `available_models` as a custom model. | CONFIRMED | c20 logs show that row; `applyAvailableModelsAllowlist` preserves allowlist/custom values as model option `value`; local harness showed `available values [ "default", "opus[1m]/high" ]`. |
 | The exact upstream source of `opus[1m]/high` in c20's `available_models` row is known. | UNPROVEN | The row is present in the session response, and `claude-agent-acp` has settings/env/custom-model routes that can create it, but the saved c20 logs do not include the relevant settings/env snapshot. |
-| If `claude-agent-acp` receives `opus[1m]/high` as a model option, it can pass that exact value to `query.setModel`. | CONFIRMED | `setSessionConfigOption` calls `query.setModel(resolvedValue)` for the model option; local pure-helper instrumentation shows `resolvedValue="opus[1m]/high"` when that value is in the model list. |
-| After OpenHands splits the logical value, `claude-agent-acp` sends `model=opus[1m]` and `effort=high` through separate SDK control requests. | CONFIRMED | OpenHands instrumentation proves the split before ACP; `claude-agent-acp` code routes model changes to `query.setModel` and effort to `query.applyFlagSettings({effortLevel:"high"})`. |
+| If `claude-agent-acp` receives `opus[1m]/high` as a model option, it can pass that exact value to `query.setModel`. | CONFIRMED | `setSessionConfigOption` calls `query.setModel(resolvedValue)` for the model option; no-inference instrumentation that invoked the real `ClaudeAcpAgent.setSessionConfigOption` captured `["immediately-before-set_model","opus[1m]/high"]`. |
+| After OpenHands splits the logical value, `claude-agent-acp` sends `model=opus[1m]` and `effort=high` through separate SDK control requests. | CONFIRMED | OpenHands instrumentation proves the split before ACP; no-inference instrumentation that invoked the real `ClaudeAcpAgent.setSessionConfigOption` captured `["immediately-before-set_model","opus[1m]"]` and `["immediately-before-apply_flag_settings",{"effortLevel":"high"}]`. |
 | `opus[1m]/high[1m]` is an OpenHands-generated model id. | RULED_OUT | No OpenHands code appends a final `[1m]`; OpenHands patch emits `opus[1m]` and `high` separately. |
 | The final extra `[1m]` is Claude Code display/error formatting. | UNPROVEN | The bundled Claude binary contains the exact selected-model error template, `model_not_found`, and many `[1m]` model labels including `opus[1m]`, but the saved logs do not show the internal formatter or raw control/API payload. |
 | The exact raw Anthropic API `model` field in the failing smoke can be proven from existing logs alone. | UNPROVEN | Logs contain the ACP error text, not raw SDK `set_model` or API request bodies. |
@@ -506,6 +560,6 @@ No real Claude prompts were sent and no Claude quota was consumed. The investiga
 - static reads of cached `@anthropic-ai/claude-agent-sdk@0.3.220`
 - `strings` over the local Claude binary for error templates and model-label strings
 - fake Python connection instrumentation around OpenHands `_apply_acp_model`
-- Node pure-helper instrumentation around Claude ACP model resolution and config option construction
+- Node no-inference instrumentation around the real `ClaudeAcpAgent.setSessionConfigOption` path with fake in-memory sessions and monkeypatched fake query methods
 
 No secrets were printed or copied.
