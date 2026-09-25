@@ -111,37 +111,51 @@ export class OpenHandsClient {
   async createConversation(
     options: CreateConversationOptions,
   ): Promise<ConversationInfo> {
-    return this.request<ConversationInfo>(
-      "/api/conversations",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          workspace: {
-            working_dir: options.workspace,
-            kind: "LocalWorkspace",
-          },
-          conversation_id:
-            options.conversationId,
-          agent_profile_id:
-            options.agentProfileId,
-          initial_message: {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: options.message,
-              },
-            ],
-            run: true,
-          },
-          autotitle: false,
-        }),
-      },
-      {
-        retryable:
-          options.conversationId !== undefined,
-      },
-    );
+    try {
+      return await this.request<ConversationInfo>(
+        "/api/conversations",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            workspace: {
+              working_dir: options.workspace,
+              kind: "LocalWorkspace",
+            },
+            conversation_id:
+              options.conversationId,
+            agent_profile_id:
+              options.agentProfileId,
+            initial_message: {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: options.message,
+                },
+              ],
+              run: true,
+            },
+            autotitle: false,
+          }),
+        },
+        {
+          retryable:
+            options.conversationId !== undefined,
+        },
+      );
+    } catch (error: unknown) {
+      if (
+        options.conversationId !== undefined &&
+        error instanceof OpenHandsApiError &&
+        error.status === 409
+      ) {
+        return this.getConversation(
+          options.conversationId,
+        );
+      }
+
+      throw error;
+    }
   }
 
   async getConversation(
