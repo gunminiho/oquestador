@@ -1,3 +1,4 @@
+import os
 from importlib.metadata import version
 from pathlib import Path
 
@@ -11,8 +12,11 @@ if actual_version != EXPECTED_VERSION:
     )
 
 path = Path(
-    "/usr/local/lib/python3.13/site-packages/"
-    "openhands/sdk/agent/acp_agent.py"
+    os.environ.get(
+        "PATCH_TARGET",
+        "/usr/local/lib/python3.13/site-packages/"
+        "openhands/sdk/agent/acp_agent.py",
+    )
 )
 
 source = path.read_text(encoding="utf-8")
