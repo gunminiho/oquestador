@@ -12,17 +12,23 @@ import {
   type WorkflowState,
 } from "./workflow";
 
-export const RUN_STATE_VERSION = 2;
+export const RUN_STATE_VERSION = 3;
 
 export type WorkflowStage =
   | "PREPARATION"
   | "IMPLEMENTATION"
   | "REVIEW";
 
+export type FailureKind =
+  | "TRANSIENT"
+  | "TERMINAL"
+  | "WORKFLOW";
+
 export interface RunState {
   version: typeof RUN_STATE_VERSION;
   taskId: string;
   workflowState: WorkflowState;
+  preparationAttempt: number;
   implementationCycle: number;
   pullRequestNumber: number | null;
   reviewAttempt: number;
@@ -30,6 +36,9 @@ export interface RunState {
   approvedHeadSha: string | null;
   mergeCommitSha: string | null;
   reviewerFeedback: string | null;
+  blockReason: string | null;
+  failureKind: FailureKind | null;
+  failureMessage: string | null;
   activeStage: WorkflowStage | null;
   activeConversationId: string | null;
   preparationConversationId: string | null;
@@ -52,6 +61,7 @@ export function createInitialRunState(
     version: RUN_STATE_VERSION,
     taskId,
     workflowState,
+    preparationAttempt: 0,
     implementationCycle: 0,
     pullRequestNumber,
     reviewAttempt: 0,
@@ -59,6 +69,9 @@ export function createInitialRunState(
     approvedHeadSha: null,
     mergeCommitSha: null,
     reviewerFeedback: null,
+    blockReason: null,
+    failureKind: null,
+    failureMessage: null,
     activeStage: null,
     activeConversationId: null,
     preparationConversationId: null,
@@ -138,16 +151,30 @@ export function validateRunState(
     throw new Error(`${source} must be an object.`);
   }
 
-  assertEqual(value.version, RUN_STATE_VERSION, `${source}.version`);
+  assertEqual(
+    value.version,
+    RUN_STATE_VERSION,
+    `${source}.version`,
+  );
   assertString(value.taskId, `${source}.taskId`);
 
-  if (expectedTaskId !== undefined && value.taskId !== expectedTaskId) {
+  if (
+    expectedTaskId !== undefined &&
+    value.taskId !== expectedTaskId
+  ) {
     throw new Error(
       `${source}.taskId must be ${expectedTaskId}, got ${value.taskId}.`,
     );
   }
 
-  assertWorkflowState(value.workflowState, `${source}.workflowState`);
+  assertWorkflowState(
+    value.workflowState,
+    `${source}.workflowState`,
+  );
+  assertNonNegativeInteger(
+    value.preparationAttempt,
+    `${source}.preparationAttempt`,
+  );
   assertNonNegativeInteger(
     value.implementationCycle,
     `${source}.implementationCycle`,
@@ -160,14 +187,38 @@ export function validateRunState(
     value.reviewAttempt,
     `${source}.reviewAttempt`,
   );
-  assertNullableSha(value.reviewHeadSha, `${source}.reviewHeadSha`);
-  assertNullableSha(value.approvedHeadSha, `${source}.approvedHeadSha`);
-  assertNullableSha(value.mergeCommitSha, `${source}.mergeCommitSha`);
+  assertNullableSha(
+    value.reviewHeadSha,
+    `${source}.reviewHeadSha`,
+  );
+  assertNullableSha(
+    value.approvedHeadSha,
+    `${source}.approvedHeadSha`,
+  );
+  assertNullableSha(
+    value.mergeCommitSha,
+    `${source}.mergeCommitSha`,
+  );
   assertNullableString(
     value.reviewerFeedback,
     `${source}.reviewerFeedback`,
   );
-  assertNullableStage(value.activeStage, `${source}.activeStage`);
+  assertNullableString(
+    value.blockReason,
+    `${source}.blockReason`,
+  );
+  assertNullableFailureKind(
+    value.failureKind,
+    `${source}.failureKind`,
+  );
+  assertNullableString(
+    value.failureMessage,
+    `${source}.failureMessage`,
+  );
+  assertNullableStage(
+    value.activeStage,
+    `${source}.activeStage`,
+  );
   assertNullableString(
     value.activeConversationId,
     `${source}.activeConversationId`,
@@ -194,7 +245,10 @@ export function validateRunState(
   return value as unknown as RunState;
 }
 
-function migrateRunState(value: unknown, source: string): unknown {
+function migrateRunState(
+  value: unknown,
+  source: string,
+): unknown {
   if (!isRecord(value)) {
     return value;
   }
@@ -203,17 +257,31 @@ function migrateRunState(value: unknown, source: string): unknown {
     return value;
   }
 
-  if (value.version !== 1) {
-    throw new Error(`${source}.version must be ${RUN_STATE_VERSION}.`);
+  if (value.version !== 1 && value.version !== 2) {
+    throw new Error(
+      `${source}.version must be ${RUN_STATE_VERSION}.`,
+    );
   }
 
+  const v2 =
+    value.version === 1
+      ? {
+          ...value,
+          version: 2,
+          reviewAttempt: 0,
+          reviewHeadSha: null,
+          approvedHeadSha: null,
+          mergeCommitSha: null,
+        }
+      : value;
+
   return {
-    ...value,
+    ...v2,
     version: RUN_STATE_VERSION,
-    reviewAttempt: 0,
-    reviewHeadSha: null,
-    approvedHeadSha: null,
-    mergeCommitSha: null,
+    preparationAttempt: 0,
+    blockReason: null,
+    failureKind: null,
+    failureMessage: null,
   };
 }
 
@@ -227,8 +295,14 @@ function safeTaskId(taskId: string): string {
   return taskId;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function isRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
 }
 
 function assertEqual(
@@ -237,29 +311,52 @@ function assertEqual(
   field: string,
 ): void {
   if (value !== expected) {
-    throw new Error(`${field} must be ${String(expected)}.`);
+    throw new Error(
+      `${field} must be ${String(expected)}.`,
+    );
   }
 }
 
-function assertString(value: unknown, field: string): void {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new Error(`${field} must be a non-empty string.`);
+function assertString(
+  value: unknown,
+  field: string,
+): void {
+  if (
+    typeof value !== "string" ||
+    value.trim() === ""
+  ) {
+    throw new Error(
+      `${field} must be a non-empty string.`,
+    );
   }
 }
 
-function assertNullableString(value: unknown, field: string): void {
-  if (value !== null && typeof value !== "string") {
-    throw new Error(`${field} must be a string or null.`);
+function assertNullableString(
+  value: unknown,
+  field: string,
+): void {
+  if (
+    value !== null &&
+    typeof value !== "string"
+  ) {
+    throw new Error(
+      `${field} must be a string or null.`,
+    );
   }
 }
 
-function assertNonNegativeInteger(value: unknown, field: string): void {
+function assertNonNegativeInteger(
+  value: unknown,
+  field: string,
+): void {
   if (
     typeof value !== "number" ||
     !Number.isInteger(value) ||
     value < 0
   ) {
-    throw new Error(`${field} must be a non-negative integer.`);
+    throw new Error(
+      `${field} must be a non-negative integer.`,
+    );
   }
 }
 
@@ -275,13 +372,19 @@ function assertNullablePositiveInteger(
       value <= 0
     )
   ) {
-    throw new Error(`${field} must be a positive integer or null.`);
+    throw new Error(
+      `${field} must be a positive integer or null.`,
+    );
   }
 }
 
-function assertWorkflowState(value: unknown, field: string): void {
+function assertWorkflowState(
+  value: unknown,
+  field: string,
+): void {
   if (
     value !== "PREPARING" &&
+    value !== "BLOCKED" &&
     value !== "IMPLEMENTING" &&
     value !== "REVIEWING" &&
     value !== "MERGING" &&
@@ -292,7 +395,10 @@ function assertWorkflowState(value: unknown, field: string): void {
   }
 }
 
-function assertNullableSha(value: unknown, field: string): void {
+function assertNullableSha(
+  value: unknown,
+  field: string,
+): void {
   if (
     value !== null &&
     (
@@ -300,11 +406,16 @@ function assertNullableSha(value: unknown, field: string): void {
       !/^[0-9a-fA-F]{40}$/.test(value)
     )
   ) {
-    throw new Error(`${field} must be a Git SHA or null.`);
+    throw new Error(
+      `${field} must be a Git SHA or null.`,
+    );
   }
 }
 
-function assertNullableStage(value: unknown, field: string): void {
+function assertNullableStage(
+  value: unknown,
+  field: string,
+): void {
   if (
     value !== null &&
     value !== "PREPARATION" &&
@@ -315,11 +426,28 @@ function assertNullableStage(value: unknown, field: string): void {
   }
 }
 
-function assertNullableVerdict(value: unknown, field: string): void {
+function assertNullableVerdict(
+  value: unknown,
+  field: string,
+): void {
   if (
     value !== null &&
     value !== "APPROVED" &&
     value !== "CHANGES_REQUESTED"
+  ) {
+    throw new Error(`${field} is invalid.`);
+  }
+}
+
+function assertNullableFailureKind(
+  value: unknown,
+  field: string,
+): void {
+  if (
+    value !== null &&
+    value !== "TRANSIENT" &&
+    value !== "TERMINAL" &&
+    value !== "WORKFLOW"
   ) {
     throw new Error(`${field} is invalid.`);
   }
