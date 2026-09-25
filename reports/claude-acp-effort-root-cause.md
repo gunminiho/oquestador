@@ -1,6 +1,6 @@
 # Claude ACP effort root cause report
 
-Task: `claude-acp-effort-root-cause-report-v3`
+Task: `claude-acp-effort-root-cause-report-v6`
 
 Conversation investigated: `c20dfea1-1ceb-4c98-be51-59d7c8c59ff6`
 
@@ -17,18 +17,20 @@ The persisted Canvas/OpenHands value was the logical combined value `opus[1m]/hi
 - legacy `set_session_model` model id: `opus[1m]`
 - `session/new` Claude `_meta` model option: `opus[1m]`
 
-The string `opus[1m]/high` in `available_models` came from the live Claude ACP model menu treating the configured custom value as a custom model entry. That happens when the configured/allowlisted model value is `opus[1m]/high`, which `claude-agent-acp` 0.63.0 will surface verbatim as a selectable custom model and pass to `query.setModel` if selected. The currently installed OpenHands patch prevents that combined value from being sent through OpenHands' direct model-apply paths.
+The string `opus[1m]/high` in `available_models` was emitted by the live Claude ACP session response as a model config-option row with description `Custom model`. Static and local no-inference instrumentation prove that `claude-agent-acp` 0.63.0 can create that exact row when `opus[1m]/high` reaches its model list through `availableModels` or a custom model option, and can pass that exact value to `query.setModel` if selected. The exact upstream source that inserted `opus[1m]/high` into the failing c20 session's Claude ACP model list is not present in the saved conversation logs, so it remains UNPROVEN. The currently installed OpenHands patch prevents that combined value from being sent through OpenHands' direct model-apply paths.
 
-The final error text mentioned `opus[1m]/high[1m]`. Static evidence shows `[1m]` is a Claude Code context-window hint used by the Claude binary and SDK. The extra trailing `[1m]` is error/display text produced below OpenHands, not a separate OpenHands effort suffix. The exact backend-bound model id inside the proprietary Claude binary cannot be proven from static source alone, but the available evidence shows two different mechanisms:
+The final error text mentioned `opus[1m]/high[1m]`. Static evidence shows `[1m]` is a Claude Code context-window hint used by the Claude binary and SDK. The extra trailing `[1m]` is not an OpenHands effort suffix. Its exact producer remains UNPROVEN because the saved logs contain only the ACP error text, not the raw Claude SDK control request or backend HTTP request. The available evidence shows two different mechanisms:
 
 - `opus[1m]/high` can be sent as a model id if it reaches `claude-agent-acp` as a model option/custom model before OpenHands splits it.
-- The final `.../high[1m]` spelling is a Claude Code formatted model label, because the binary contains the exact model-not-found message template and many `[1m]` model label strings.
+- The final `.../high[1m]` spelling is consistent with Claude Code formatted model labels, because the bundled Claude binary contains the exact model-not-found message template and many `[1m]` model label strings, but this does not prove where the final `[1m]` was appended.
 
 The account reportedly had no Claude Pro quota during the smoke test. That can explain why a real smoke test could not complete inference. It does not explain the observed `model_not_found` subtype by itself. The conversation log recorded `model_not_found`, not `rate_limit`, `billing_error`, `permission_denied`, or `overloaded`.
 
 ## Repository and runtime state checked
 
-The local repo was on `diag/claude-acp-effort-root-cause-v2`, tracking `origin/diag/claude-acp-effort-root-cause-v2`, with no local changes before this report. The branch pointed at the same commit as `main`, so the report did not already exist.
+Before this v6 correction, the local worktree was the isolated orchestrator checkout `/projects/.orchestrator-worktrees/claude-acp-effort-root-cause-report-v6-567ef44dd924`, in detached HEAD by design. `git status --short --branch` reported `## HEAD (no branch)` with no uncommitted changes. HEAD was `adf76ad` (`docs: report Claude ACP effort root cause`), matching `origin/pr-5`, `origin/diag/claude-acp-effort-root-cause-v2`, and the local `diag/claude-acp-effort-root-cause-v2` ref. The pre-existing PR HEAD already contained this report file.
+
+The "repo state before the report existed" was earlier than `adf76ad`: this report branch was created on top of `c048cca` (`Merge pull request #4 from gunminiho/feat/claude-effort-support`). That earlier base state is distinct from the current PR HEAD being corrected here.
 
 The installed Python package reported `openhands-sdk==1.49.4`. The installed Node ACP package used by `npx` was `@agentclientprotocol/claude-agent-acp@0.63.0`, and its `package.json` pins `@anthropic-ai/claude-agent-sdk@0.3.220`. The Claude Agent SDK package reported bundled Claude Code version `2.1.220`.
 
@@ -104,7 +106,7 @@ session_meta = build_session_model_meta(agent_name, session_model)
 conn.new_session(..., **session_meta)
 ```
 
-For Claude this builds:
+For the `claude-agent` / `@agentclientprotocol/claude-agent-acp` names used by the npm Claude ACP server, this builds:
 
 ```text
 {"claudeCode": {"options": {"model": "opus[1m]"}}}
@@ -122,7 +124,7 @@ via_config_option=True:
 via_config_option=False:
   set_session_model("opus[1m]")
 
-session_meta:
+session_meta with `agent_name="@agentclientprotocol/claude-agent-acp"`:
   {"claudeCode": {"options": {"model": "opus[1m]"}}}
 ```
 
@@ -204,7 +206,7 @@ resolveModelPreference(models, "opus[1m]")      -> "opus"
 effort option includes high/max from Opus capabilities
 ```
 
-With an allowlist/custom model entry `["opus[1m]/high"]`:
+With an allowlist/custom model entry `["opus[1m]/high"]`, a no-inference local harness that imported `applyAvailableModelsAllowlist` and `buildConfigOptions` reported the values immediately before the ACP `model` and `effort` config options would call the SDK boundary:
 
 ```text
 applyAvailableModelsAllowlist(...).models contains value "opus[1m]/high"
@@ -221,7 +223,14 @@ model config option value -> "opus[1m]"
 effort option currentValue -> "high"
 ```
 
-This proves that the custom/allowlist route can preserve the combined `model/effort` string as the actual `setModel` target. It also proves that after OpenHands splits the value, `claude-agent-acp` receives `opus[1m]` as the model target and `high` as the effort flag.
+An additional local mock at the SDK boundary recorded:
+
+```text
+setModel("opus[1m]")
+applyFlagSettings({"effortLevel":"high"})
+```
+
+This proves that the custom/allowlist route can preserve the combined `model/effort` string as the actual `setModel` target. It also proves that after OpenHands splits the value, the intended Claude ACP boundary values are `setModel("opus[1m]")` and `applyFlagSettings({effortLevel:"high"})`. It does not prove which upstream settings/env source created the custom `opus[1m]/high` row in c20.
 
 ## Anthropic Claude Agent SDK and Claude binary flow
 
@@ -261,9 +270,11 @@ Because the binary is proprietary/minified native code, static analysis cannot p
 
 `opus[1m]/high[1m]` is not an OpenHands serialization format and is not produced by the installed OpenHands split patch.
 
-It is best explained as Claude Code rendering a selected model label with a context-window hint. If the selected model string was still `opus[1m]/high` when the Claude binary handled it, the binary can append/display its own `[1m]` hint and produce `opus[1m]/high[1m]` in the error text.
+It is consistent with Claude Code rendering a selected model label with a context-window hint. If the selected model string was still `opus[1m]/high` when the Claude binary handled it, a formatter below OpenHands could append/display its own `[1m]` hint and produce `opus[1m]/high[1m]` in the error text. The saved logs do not prove that internal formatting step.
 
-The proven source of `opus[1m]/high` in `available_models` is the Claude ACP model menu/custom model path. The exact source of the final extra `[1m]` is the Claude binary display/error layer; the exact backend-bound model string in the failing smoke cannot be proven from available logs alone because the log captures the error text, not the raw `set_model` control request or API request.
+The proven immediate source of `opus[1m]/high` in OpenHands `available_models` is the Claude ACP session response: event `event-00004-aed...json` contains a fifth model row with `model_id`, `name`, and `description` equal to `opus[1m]/high`, `opus[1m]/high`, and `Custom model`. `claude-agent-acp` code and local instrumentation prove how that row can be produced from an `availableModels`/custom-model input. The exact source that fed that input in the failing c20 runtime remains UNPROVEN because the saved logs do not include the Claude ACP settings file, `CLAUDE_MODEL_CONFIG`, `ANTHROPIC_MODEL`, or `ANTHROPIC_CUSTOM_MODEL_OPTION` snapshot.
+
+The exact source of the final extra `[1m]` is also UNPROVEN. Static evidence places the model-not-found template and `[1m]` label vocabulary below OpenHands in the Claude Code layer, but the saved logs do not capture the raw SDK `set_model` control request, the proprietary binary's internal selected-model value, or the final backend request body.
 
 ## Quota analysis
 
@@ -289,11 +300,12 @@ Therefore quota is a separate smoke-test blocker, not the demonstrated root caus
 | OpenHands persisted the combined logical value `opus[1m]/high`. | CONFIRMED | `LocalConversation.switch_acp_model` persists the caller value as `acp_model`; c20 events show `acp_current_model_id="opus[1m]/high"`. |
 | The installed OpenHands SDK 1.49.4 patch still sends `opus[1m]/high` through `_apply_acp_model` for Claude. | RULED_OUT | Static code and fake-connection instrumentation show `set_config_option("model","opus[1m]")`, `set_config_option("effort","high")`, and legacy `set_session_model("opus[1m]")`. |
 | `build_session_model_meta` still sends the combined value in `session/new` `_meta`. | RULED_OUT | Installed code calls `_model_config_model_value` before `build_session_model_meta`; local instrumentation returns `{"claudeCode":{"options":{"model":"opus[1m]"}}}`. |
-| `claude-agent-acp` can surface `opus[1m]/high` in `available_models` as a custom model. | CONFIRMED | c20 logs show that row; `applyAvailableModelsAllowlist` preserves allowlist/custom values as model option `value`. |
+| `claude-agent-acp` can surface `opus[1m]/high` in `available_models` as a custom model. | CONFIRMED | c20 logs show that row; `applyAvailableModelsAllowlist` preserves allowlist/custom values as model option `value`; local harness showed `available values [ "default", "opus[1m]/high" ]`. |
+| The exact upstream source of `opus[1m]/high` in c20's `available_models` row is known. | UNPROVEN | The row is present in the session response, and `claude-agent-acp` has settings/env/custom-model routes that can create it, but the saved c20 logs do not include the relevant settings/env snapshot. |
 | If `claude-agent-acp` receives `opus[1m]/high` as a model option, it can pass that exact value to `query.setModel`. | CONFIRMED | `setSessionConfigOption` calls `query.setModel(resolvedValue)` for the model option; local pure-helper instrumentation shows `resolvedValue="opus[1m]/high"` when that value is in the model list. |
 | After OpenHands splits the logical value, `claude-agent-acp` sends `model=opus[1m]` and `effort=high` through separate SDK control requests. | CONFIRMED | OpenHands instrumentation proves the split before ACP; `claude-agent-acp` code routes model changes to `query.setModel` and effort to `query.applyFlagSettings({effortLevel:"high"})`. |
 | `opus[1m]/high[1m]` is an OpenHands-generated model id. | RULED_OUT | No OpenHands code appends a final `[1m]`; OpenHands patch emits `opus[1m]` and `high` separately. |
-| The final extra `[1m]` is Claude Code display/error formatting. | CONFIRMED | The bundled Claude binary contains the exact selected-model error template, `model_not_found`, and many `[1m]` model labels including `opus[1m]`. |
+| The final extra `[1m]` is Claude Code display/error formatting. | UNPROVEN | The bundled Claude binary contains the exact selected-model error template, `model_not_found`, and many `[1m]` model labels including `opus[1m]`, but the saved logs do not show the internal formatter or raw control/API payload. |
 | The exact raw Anthropic API `model` field in the failing smoke can be proven from existing logs alone. | UNPROVEN | Logs contain the ACP error text, not raw SDK `set_model` or API request bodies. |
 | Lack of Claude Pro quota caused the observed `model_not_found`. | UNPROVEN | Quota was reported separately, but c20 logs show `model_not_found`, not a quota/rate/billing error. |
 
@@ -306,9 +318,9 @@ Canvas/OpenHands used `opus[1m]/high` to represent two independent choices:
 - Claude model/context alias: `opus[1m]`
 - Claude effort: `high`
 
-Older or unpatched provider-facing paths treated the whole string as a Claude model id. In `claude-agent-acp` 0.63.0, a configured model value can become a custom model entry and be passed as the exact `query.setModel` target. Claude Code then treats that value as the selected model and reports it in a `model_not_found` error with an additional context hint, yielding the observed `opus[1m]/high[1m]` text.
+Older or unpatched provider-facing paths treated the whole string as a Claude model id. In `claude-agent-acp` 0.63.0, a configured model value can become a custom model entry and be passed as the exact `query.setModel` target. The c20 logs prove that the live ACP session exposed `opus[1m]/high` as a custom model row and then failed with selected model text `opus[1m]/high[1m]`. The exact runtime route that fed `opus[1m]/high` into the Claude ACP model list, and the exact formatter that added the final `[1m]`, are not proven by the available logs.
 
-The current OpenHands patch fixes the direct split for `_apply_acp_model`, session `_meta`, fresh sessions, resume/reconnect, and legacy model application. The smoke can still fail if another path injects `opus[1m]/high` into Claude ACP settings, allowlist, environment (`ANTHROPIC_MODEL`, `ANTHROPIC_CUSTOM_MODEL_OPTION`, `CLAUDE_MODEL_CONFIG.availableModels`), or persisted Claude config outside the patched OpenHands call path. The c20 log's custom available-model row is the strongest evidence of such an injected custom/model-list value.
+The current OpenHands patch fixes the direct split for `_apply_acp_model`, session `_meta` on the `claude-agent`/`@agentclientprotocol/claude-agent-acp` names, fresh sessions, resume/reconnect, and legacy model application. The smoke can still fail if another path injects `opus[1m]/high` into Claude ACP settings, allowlist, environment (`ANTHROPIC_MODEL`, `ANTHROPIC_CUSTOM_MODEL_OPTION`, `CLAUDE_MODEL_CONFIG.availableModels`), or persisted Claude config outside the patched OpenHands call path. The c20 log's custom available-model row is the strongest evidence of such an injected custom/model-list value, but the exact source is UNPROVEN.
 
 ## Why previous tests gave false positives
 
