@@ -22,6 +22,11 @@ export interface WorkspaceManager {
   ): Promise<boolean>;
 }
 
+export type DockerCommandRunner =
+  (
+    args: string[],
+  ) => Promise<string>;
+
 export function worktreePathForTask(
   root: string,
   taskId: string,
@@ -50,6 +55,8 @@ implements WorkspaceManager {
     private readonly worktreeRoot =
       process.env.OH_WORKTREE_ROOT ??
       "/projects/.orchestrator-worktrees",
+    private readonly commandRunner?:
+      DockerCommandRunner,
   ) {}
 
   async prepare(
@@ -276,6 +283,15 @@ implements WorkspaceManager {
   private async docker(
     args: string[],
   ): Promise<string> {
+    if (
+      this.commandRunner !==
+      undefined
+    ) {
+      return this.commandRunner(
+        args,
+      );
+    }
+
     const { stdout } =
       await execFileAsync(
         "docker",
@@ -284,6 +300,9 @@ implements WorkspaceManager {
           this.containerName,
           ...args,
         ],
+        {
+          encoding: "utf8",
+        },
       );
 
     return stdout;
