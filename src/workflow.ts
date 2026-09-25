@@ -1,5 +1,6 @@
-﻿export type WorkflowState =
+export type WorkflowState =
   | "PREPARING"
+  | "BLOCKED"
   | "IMPLEMENTING"
   | "REVIEWING"
   | "MERGING"
@@ -43,21 +44,22 @@ export function nextStateAfterReview(
   switch (verdict) {
     case "APPROVED":
       return "MERGING";
-
     case "CHANGES_REQUESTED":
       return "IMPLEMENTING";
   }
 }
 
-
-export type PreparationResult = "READY";
+export interface PreparationResult {
+  status: "READY" | "BLOCKED";
+  reason: string | null;
+}
 
 export function parsePreparationResult(
   response: string,
 ): PreparationResult {
   const matches = [
     ...response.matchAll(
-      /PREPARATION_RESULT:[ \t]*(READY)\b/g,
+      /PREPARATION_RESULT:[ \t]*(READY|BLOCKED)\b/g,
     ),
   ];
 
@@ -67,7 +69,36 @@ export function parsePreparationResult(
     );
   }
 
-  return "READY";
+  const status = matches[0]?.[1];
+
+  if (
+    status !== "READY" &&
+    status !== "BLOCKED"
+  ) {
+    throw new Error("Invalid PREPARATION_RESULT value.");
+  }
+
+  const reasonMatches = [
+    ...response.matchAll(
+      /^PREPARATION_REASON:[ \t]*(.+)$/gm,
+    ),
+  ];
+
+  if (reasonMatches.length > 1) {
+    throw new Error(
+      `Expected at most one PREPARATION_REASON, found ${reasonMatches.length}.`,
+    );
+  }
+
+  const reason = reasonMatches[0]?.[1]?.trim() ?? null;
+
+  if (status === "BLOCKED" && !reason) {
+    throw new Error(
+      "PREPARATION_RESULT: BLOCKED requires exactly one PREPARATION_REASON.",
+    );
+  }
+
+  return { status, reason };
 }
 
 export interface ImplementationResult {
