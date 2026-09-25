@@ -1716,28 +1716,6 @@ async function main(): Promise<void> {
   const github =
     new GhCliGitHubClient();
 
-  if (
-    github
-      .ensureBranchPublished ===
-    undefined
-  ) {
-    throw new Error(
-      "Configured GitHub client cannot publish branches.",
-    );
-  }
-
-  await github
-    .ensureBranchPublished({
-      owner:
-        task.repository.owner,
-      repo:
-        task.repository.name,
-      workspace:
-        task.workspace,
-      branch:
-        task.workingBranch,
-    });
-
   const finalState =
     await runWorkflow({
       client,
