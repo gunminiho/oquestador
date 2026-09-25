@@ -25,12 +25,12 @@ After `APPROVED`, `MERGING` verifies that the Pull Request HEAD still matches th
 Each task gets its own deterministic workspace:
 
 ```text
-/projects/.orchestrator-worktrees/<task-id>
+/projects/.orchestrator-worktrees/<task-id>-<scope-hash>
 ```
 
 The source checkout is not switched, reset, stashed, or reused as the agent workspace. New worktrees are created in detached-HEAD mode from either the existing remote working branch or `origin/<baseBranch>`. Detached HEAD is intentional: it avoids Git branch checkout conflicts when multiple worktrees or tasks exist simultaneously.
 
-The task ID is restricted to letters, numbers, dots, underscores, and hyphens so it cannot escape the worktree root.
+The task ID is restricted to letters, numbers, dots, underscores, and hyphens so it cannot escape the worktree root. The short scope hash is derived from repository owner/name, base branch, and working branch, so reusing a task ID with a different repository or branch cannot silently reuse the wrong worktree.
 
 A worktree is preserved when the task is `BLOCKED` or `FAILED`. Cleanup is attempted only after `DONE`, and only when the workspace is clean and its HEAD exactly matches the published remote working branch.
 
