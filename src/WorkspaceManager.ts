@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 
 import type { WorkflowTask } from "./task";
@@ -29,11 +30,17 @@ export type DockerCommandRunner =
 
 export function worktreePathForTask(
   root: string,
-  taskId: string,
+  task: Pick<
+    WorkflowTask,
+    | "id"
+    | "repository"
+    | "baseBranch"
+    | "workingBranch"
+  >,
 ): string {
   if (
     !/^[A-Za-z0-9._-]+$/.test(
-      taskId,
+      task.id,
     )
   ) {
     throw new Error(
@@ -41,8 +48,21 @@ export function worktreePathForTask(
     );
   }
 
+  const scopeHash =
+    createHash("sha256")
+      .update(
+        [
+          task.repository.owner,
+          task.repository.name,
+          task.baseBranch,
+          task.workingBranch,
+        ].join("\0"),
+      )
+      .digest("hex")
+      .slice(0, 12);
+
   return (
-    `${root.replace(/\/+$/, "")}/${taskId}`
+    `${root.replace(/\/+$/, "")}/${task.id}-${scopeHash}`
   );
 }
 
@@ -65,7 +85,7 @@ implements WorkspaceManager {
     const target =
       worktreePathForTask(
         this.worktreeRoot,
-        task.id,
+        task,
       );
 
     const existingHead =
