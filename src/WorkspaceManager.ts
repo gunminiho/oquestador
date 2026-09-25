@@ -61,27 +61,18 @@ implements WorkspaceManager {
         task.id,
       );
 
-    const existingBranch =
+    const existingHead =
       await this.tryGit(
         target,
         [
-          "branch",
-          "--show-current",
+          "rev-parse",
+          "HEAD",
         ],
       );
 
     if (
-      existingBranch !== null
+      existingHead !== null
     ) {
-      if (
-        existingBranch.trim() !==
-        task.workingBranch
-      ) {
-        throw new Error(
-          `Existing worktree ${target} is on ${existingBranch.trim()}, expected ${task.workingBranch}.`,
-        );
-      }
-
       return {
         workspace: target,
         sourceWorkspace:
@@ -118,56 +109,27 @@ implements WorkspaceManager {
       );
     }
 
-    const localBranchExists =
-      await this.refExists(
-        task.workspace,
-        `refs/heads/${task.workingBranch}`,
-      );
-
     const remoteBranchExists =
       await this.refExists(
         task.workspace,
         `refs/remotes/origin/${task.workingBranch}`,
       );
 
-    if (localBranchExists) {
-      await this.git(
-        task.workspace,
-        [
-          "worktree",
-          "add",
-          target,
-          task.workingBranch,
-        ],
-      );
-    } else if (
+    const startRef =
       remoteBranchExists
-    ) {
-      await this.git(
-        task.workspace,
-        [
-          "worktree",
-          "add",
-          "--track",
-          "-b",
-          task.workingBranch,
-          target,
-          `origin/${task.workingBranch}`,
-        ],
-      );
-    } else {
-      await this.git(
-        task.workspace,
-        [
-          "worktree",
-          "add",
-          "-b",
-          task.workingBranch,
-          target,
-          `origin/${task.baseBranch}`,
-        ],
-      );
-    }
+        ? `origin/${task.workingBranch}`
+        : `origin/${task.baseBranch}`;
+
+    await this.git(
+      task.workspace,
+      [
+        "worktree",
+        "add",
+        "--detach",
+        target,
+        startRef,
+      ],
+    );
 
     await this.docker([
       "git",
