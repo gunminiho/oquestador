@@ -1191,6 +1191,13 @@ async function runAgentStage(
         stage,
       );
 
+    let conversation:
+      | {
+          id: string;
+          execution_status: string;
+        }
+      | null = null;
+
     if (
       conversationId === null
     ) {
@@ -1216,7 +1223,7 @@ async function runAgentStage(
           },
         );
 
-      const conversation =
+      const createdConversation =
         await options.client
           .createConversation({
             workspace:
@@ -1230,9 +1237,16 @@ async function runAgentStage(
           });
 
       assertConversationId(
-        conversation.id,
+        createdConversation.id,
         conversationId,
       );
+
+      conversation = {
+        id:
+          createdConversation.id,
+        execution_status:
+          "running",
+      };
 
       console.log(
         `Conversation: ${conversationId}`,
@@ -1255,12 +1269,16 @@ async function runAgentStage(
       );
     }
 
-    const conversation =
-      await getOrCreateConversation(
-        options,
-        conversationId,
-        message,
-      );
+    if (
+      conversation === null
+    ) {
+      conversation =
+        await getOrCreateConversation(
+          options,
+          conversationId,
+          message,
+        );
+    }
 
     if (
       conversation
@@ -1365,10 +1383,12 @@ async function getOrCreateConversation(
     conversationId,
   );
 
-  return options.client
-    .getConversation(
-      conversationId,
-    );
+  return {
+    id:
+      conversation.id,
+    execution_status:
+      "running",
+  };
 }
 
 function assertConversationId(
