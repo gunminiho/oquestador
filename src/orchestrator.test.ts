@@ -1,6 +1,11 @@
-import { mkdtempSync } from "node:fs";
+import { execFile } from "node:child_process";
+import {
+  mkdtempSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -19,6 +24,8 @@ import type { WorkflowTask } from "./task";
 const SHA_ONE = "1111111111111111111111111111111111111111";
 const SHA_TWO = "2222222222222222222222222222222222222222";
 const MERGE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const execFileAsync =
+  promisify(execFile);
 
 class FakeClient {
   createCount = 0;
@@ -32,6 +39,7 @@ class FakeClient {
     "IMPLEMENTATION_RESULT: READY_FOR_REVIEW",
     "PULL_REQUEST_NUMBER: 123",
   ].join("\n");
+  implementationResponses: string[] = [];
   statuses = new Map<string, string>();
   responses = new Map<string, string>();
 
@@ -114,6 +122,8 @@ class FakeClient {
 
 class FakeGitHubClient implements GitHubClient {
   getCount = 0;
+  ensureBranchPublishedCount = 0;
+  ensurePullRequestCount = 0;
   mergeCount = 0;
   mergeExpectedHeadShas: string[] = [];
   pullRequest: PullRequestDetails = {
@@ -137,6 +147,19 @@ class FakeGitHubClient implements GitHubClient {
       callback(this);
     }
     return pullRequest;
+  }
+
+  async ensureBranchPublished(): Promise<void> {
+    this.ensureBranchPublishedCount += 1;
+  }
+
+  async ensurePullRequest(): Promise<{ number: number }> {
+    this.ensurePullRequestCount += 1;
+
+    return {
+      number:
+        this.pullRequest.number,
+    };
   }
 
   async mergePullRequest(options: {
@@ -166,6 +189,13 @@ function responseForMessage(
   }
 
   if (message.includes("Implementador")) {
+    const response =
+      this.implementationResponses.shift();
+
+    if (response !== undefined) {
+      return response;
+    }
+
     return this.implementationResponse;
   }
 
@@ -195,6 +225,128 @@ function temporaryStore(): RunStateStore {
   );
 }
 
+async function git(
+  workspace: string,
+  args: string[],
+): Promise<string> {
+  const { stdout } =
+    await execFileAsync(
+      "git",
+      [
+        "-C",
+        workspace,
+        ...args,
+      ],
+      {
+        encoding: "utf8",
+      },
+    );
+
+  return stdout;
+}
+
+async function createRepositoryAtBase(): Promise<{
+  workspace: string;
+  baseSha: string;
+}> {
+  const root =
+    mkdtempSync(
+      join(
+        tmpdir(),
+        "orchestrator-git-test-",
+      ),
+    );
+  const remote =
+    join(root, "remote.git");
+  const workspace =
+    join(root, "workspace");
+
+  await execFileAsync(
+    "git",
+    [
+      "init",
+      "--bare",
+      remote,
+    ],
+  );
+  await execFileAsync(
+    "git",
+    [
+      "clone",
+      remote,
+      workspace,
+    ],
+  );
+  await git(
+    workspace,
+    [
+      "checkout",
+      "-b",
+      "main",
+    ],
+  );
+  await git(
+    workspace,
+    [
+      "config",
+      "user.email",
+      "test@example.com",
+    ],
+  );
+  await git(
+    workspace,
+    [
+      "config",
+      "user.name",
+      "Test User",
+    ],
+  );
+  writeFileSync(
+    join(workspace, "README.md"),
+    "ready\n",
+    "utf8",
+  );
+  await git(
+    workspace,
+    [
+      "add",
+      "README.md",
+    ],
+  );
+  await git(
+    workspace,
+    [
+      "commit",
+      "-m",
+      "Initial commit",
+    ],
+  );
+  await git(
+    workspace,
+    [
+      "push",
+      "-u",
+      "origin",
+      "main",
+    ],
+  );
+  const baseSha =
+    (
+      await git(
+        workspace,
+        [
+          "rev-parse",
+          "HEAD",
+        ],
+      )
+    ).trim();
+
+  return {
+    workspace,
+    baseSha,
+  };
+}
+
 async function runWorkflow(
   options: Parameters<typeof runRealWorkflow>[0] & {
     github?: GitHubClient;
@@ -222,6 +374,259 @@ test("resumes from PREPARING and completes workflow", async () => {
   assert.equal(finalState.implementationCycle, 1);
   assert.equal(finalState.pullRequestNumber, 123);
   assert.equal(client.createCount, 3);
+});
+
+test("NO_CHANGES_REQUIRED skips branch publication and Pull Request creation", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  const repo =
+    await createRepositoryAtBase();
+  client.implementationResponse =
+    "IMPLEMENTATION_RESULT: NO_CHANGES_REQUIRED";
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task({
+      workspace:
+        repo.workspace,
+    }),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(finalState.pullRequestNumber, null);
+  assert.equal(finalState.noChangesBaseSha, repo.baseSha);
+  assert.equal(finalState.approvedHeadSha, null);
+  assert.equal(finalState.mergeCommitSha, null);
+  assert.equal(github.ensureBranchPublishedCount, 0);
+  assert.equal(github.ensurePullRequestCount, 0);
+  assert.equal(github.mergeCount, 0);
+});
+
+test("NO_CHANGES_REQUIRED reviewer approval ends DONE without PR", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  const repo =
+    await createRepositoryAtBase();
+  client.implementationResponse =
+    "IMPLEMENTATION_RESULT: NO_CHANGES_REQUIRED";
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task({
+      workspace:
+        repo.workspace,
+    }),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  const reviewMessage =
+    client.messages.find((message) =>
+      message.includes(
+        "NO EXISTE Pull Request",
+      ),
+    );
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(finalState.pullRequestNumber, null);
+  assert.equal(finalState.mergeCommitSha, null);
+  assert.match(reviewMessage ?? "", new RegExp(repo.baseSha));
+});
+
+test("NO_CHANGES_REQUIRED reviewer changes returns to implementation", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  const repo =
+    await createRepositoryAtBase();
+  client.implementationResponses = [
+    "IMPLEMENTATION_RESULT: NO_CHANGES_REQUIRED",
+    [
+      "IMPLEMENTATION_RESULT: READY_FOR_REVIEW",
+      "PULL_REQUEST_NUMBER: 123",
+    ].join("\n"),
+  ];
+  client.reviewVerdicts = [
+    "CHANGES_REQUESTED",
+    "APPROVED",
+  ];
+
+  const finalState =
+    await runWorkflow({
+      client,
+      github,
+      task: task({
+        workspace:
+          repo.workspace,
+      }),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(finalState.implementationCycle, 2);
+  assert.equal(finalState.noChangesBaseSha, null);
+  assert.equal(finalState.pullRequestNumber, 123);
+  assert.equal(github.ensureBranchPublishedCount, 1);
+  assert.equal(github.ensurePullRequestCount, 1);
+  assert.equal(github.mergeCount, 1);
+});
+
+test("NO_CHANGES_REQUIRED fails safely with local changes", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  const repo =
+    await createRepositoryAtBase();
+  client.implementationResponse =
+    "IMPLEMENTATION_RESULT: NO_CHANGES_REQUIRED";
+  writeFileSync(
+    join(repo.workspace, "local.txt"),
+    "dirty\n",
+    "utf8",
+  );
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      github,
+      task: task({
+        workspace:
+          repo.workspace,
+      }),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    /local changes/,
+  );
+
+  assert.equal(store.load("workflow-task")?.workflowState, "FAILED");
+  assert.equal(github.ensureBranchPublishedCount, 0);
+  assert.equal(github.ensurePullRequestCount, 0);
+});
+
+test("NO_CHANGES_REQUIRED fails safely with commits ahead of base", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  const repo =
+    await createRepositoryAtBase();
+  client.implementationResponse =
+    "IMPLEMENTATION_RESULT: NO_CHANGES_REQUIRED";
+  writeFileSync(
+    join(repo.workspace, "ahead.txt"),
+    "ahead\n",
+    "utf8",
+  );
+  await git(
+    repo.workspace,
+    [
+      "add",
+      "ahead.txt",
+    ],
+  );
+  await git(
+    repo.workspace,
+    [
+      "commit",
+      "-m",
+      "Ahead commit",
+    ],
+  );
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      github,
+      task: task({
+        workspace:
+          repo.workspace,
+      }),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    /commits ahead/,
+  );
+
+  assert.equal(store.load("workflow-task")?.workflowState, "FAILED");
+  assert.equal(github.ensureBranchPublishedCount, 0);
+  assert.equal(github.ensurePullRequestCount, 0);
+});
+
+test("NO_CHANGES_REQUIRED fails safely when HEAD differs from base", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  const repo =
+    await createRepositoryAtBase();
+  client.implementationResponse =
+    "IMPLEMENTATION_RESULT: NO_CHANGES_REQUIRED";
+  writeFileSync(
+    join(repo.workspace, "base-moved.txt"),
+    "base moved\n",
+    "utf8",
+  );
+  await git(
+    repo.workspace,
+    [
+      "add",
+      "base-moved.txt",
+    ],
+  );
+  await git(
+    repo.workspace,
+    [
+      "commit",
+      "-m",
+      "Move base",
+    ],
+  );
+  await git(
+    repo.workspace,
+    [
+      "push",
+      "origin",
+      "main",
+    ],
+  );
+  await git(
+    repo.workspace,
+    [
+      "checkout",
+      "--detach",
+      repo.baseSha,
+    ],
+  );
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      github,
+      task: task({
+        workspace:
+          repo.workspace,
+      }),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    /is not origin\/main/,
+  );
+
+  assert.equal(store.load("workflow-task")?.workflowState, "FAILED");
+  assert.equal(github.ensureBranchPublishedCount, 0);
+  assert.equal(github.ensurePullRequestCount, 0);
 });
 
 test("resumes from IMPLEMENTING preserving cycle, PR, and reviewer feedback", async () => {
@@ -644,6 +1049,11 @@ test("recreates a missing remote conversation with the persisted deterministic i
 test("reuses an active persisted conversation instead of creating a second one", async () => {
   const store = temporaryStore();
   const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  github.pullRequest = {
+    ...github.pullRequest,
+    number: 88,
+  };
   client.statuses.set("existing-impl", "running");
   client.responses.set(
     "existing-impl",
@@ -662,6 +1072,7 @@ test("reuses an active persisted conversation instead of creating a second one",
 
   const finalState = await runWorkflow({
     client,
+    github,
     task: task(),
     store,
     agentProfileId: "profile",

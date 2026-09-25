@@ -40,9 +40,19 @@ export function parseReviewerVerdict(
 
 export function nextStateAfterReview(
   verdict: ReviewerVerdict,
+  options: {
+    noChangesRequired?: boolean;
+  } = {},
 ): WorkflowState {
   switch (verdict) {
     case "APPROVED":
+      if (
+        options.noChangesRequired ===
+        true
+      ) {
+        return "DONE";
+      }
+
       return "MERGING";
     case "CHANGES_REQUESTED":
       return "IMPLEMENTING";
@@ -102,7 +112,9 @@ export function parsePreparationResult(
 }
 
 export interface ImplementationResult {
-  status: "READY_FOR_REVIEW";
+  status:
+    | "READY_FOR_REVIEW"
+    | "NO_CHANGES_REQUIRED";
   pullRequestNumber?: number;
 }
 
@@ -111,7 +123,7 @@ export function parseImplementationResult(
 ): ImplementationResult {
   const statusMatches = [
     ...response.matchAll(
-      /IMPLEMENTATION_RESULT:[ \t]*(READY_FOR_REVIEW)\b/g,
+      /IMPLEMENTATION_RESULT:[ \t]*(READY_FOR_REVIEW|NO_CHANGES_REQUIRED)\b/g,
     ),
   ];
 
@@ -136,9 +148,30 @@ export function parseImplementationResult(
   const rawPullRequestNumber =
     pullRequestMatches[0]?.[1];
 
+  const status =
+    statusMatches[0]?.[1];
+
+  if (
+    status !== "READY_FOR_REVIEW" &&
+    status !== "NO_CHANGES_REQUIRED"
+  ) {
+    throw new Error(
+      "Invalid IMPLEMENTATION_RESULT value.",
+    );
+  }
+
+  if (
+    status === "NO_CHANGES_REQUIRED" &&
+    rawPullRequestNumber !== undefined
+  ) {
+    throw new Error(
+      "NO_CHANGES_REQUIRED must not include PULL_REQUEST_NUMBER.",
+    );
+  }
+
   if (rawPullRequestNumber === undefined) {
     return {
-      status: "READY_FOR_REVIEW",
+      status,
     };
   }
 
@@ -155,7 +188,7 @@ export function parseImplementationResult(
   }
 
   return {
-    status: "READY_FOR_REVIEW",
+    status,
     pullRequestNumber,
   };
 }

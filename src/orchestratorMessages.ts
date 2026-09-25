@@ -134,6 +134,8 @@ Antes de modificar código:
 Si el trabajo ya cumple completamente:
 - no hagas modificaciones innecesarias;
 - no crees commits vacíos.
+- deja el worktree limpio, sin commits propios respecto de origin/${task.baseBranch};
+- devuelve el resultado explícito sin cambios indicado abajo.
 
 Si existen cambios necesarios:
 - realiza únicamente los cambios necesarios;
@@ -150,6 +152,10 @@ NO cambies la rama base.
 Tu respuesta final debe incluir exactamente:
 
 IMPLEMENTATION_RESULT: READY_FOR_REVIEW
+
+Para el caso en que la rama base ya satisface completamente la tarea y no hay cambios persistentes necesarios, tu respuesta final debe incluir exactamente:
+
+IMPLEMENTATION_RESULT: NO_CHANGES_REQUIRED
 
 Si conoces un Pull Request ya existente puedes incluir opcionalmente:
 
@@ -214,6 +220,64 @@ o
 REVIEW_VERDICT: CHANGES_REQUESTED
 
 Usa APPROVED únicamente si el Pull Request satisface completamente el objetivo y todos los criterios de aceptación.
+
+Si utilizas CHANGES_REQUESTED, explica con precisión qué debe corregir el Implementador.
+`;
+}
+
+export function buildNoChangesReviewMessage(
+  task: WorkflowTask,
+  baseSha: string,
+): string {
+  return `
+Actúa exclusivamente como Reviewer.
+
+TASK ID:
+${task.id}
+
+REPOSITORIO:
+${repositoryName(task)}
+
+NO EXISTE Pull Request porque el Implementador declaró que no hay cambios requeridos.
+
+SHA EXACTO DE LA RAMA BASE BAJO REVISIÓN:
+${baseSha}
+
+RAMA BASE:
+${task.baseBranch}
+
+RAMA DE TRABAJO:
+${task.workingBranch}
+
+OBJETIVO:
+${task.objective}
+
+CRITERIOS DE ACEPTACIÓN:
+${formatAcceptanceCriteria(task)}
+
+Revisa en modo read-only si el SHA exacto de la rama base indicado arriba satisface completamente el objetivo y TODOS los criterios de aceptación sin requerir cambios.
+
+Reglas:
+- trabaja en modo estrictamente read-only;
+- revisa exactamente el SHA indicado arriba;
+- no requieras Pull Request para esta revisión;
+- no modifiques archivos;
+- no cambies ramas;
+- no hagas commits;
+- no hagas push;
+- no hagas merge;
+- no publiques reviews ni comentarios en GitHub;
+- solicita CHANGES_REQUESTED ante cualquier bypass que convierta un error de GitHub "No commits between" en éxito sin verificar previamente que la tarea es realmente no-op.
+
+Tu respuesta final DEBE contener exactamente uno de estos verdicts:
+
+REVIEW_VERDICT: APPROVED
+
+o
+
+REVIEW_VERDICT: CHANGES_REQUESTED
+
+Usa APPROVED únicamente si la rama base en el SHA indicado satisface completamente el objetivo y todos los criterios de aceptación.
 
 Si utilizas CHANGES_REQUESTED, explica con precisión qué debe corregir el Implementador.
 `;

@@ -12,7 +12,7 @@ import {
   type WorkflowState,
 } from "./workflow";
 
-export const RUN_STATE_VERSION = 3;
+export const RUN_STATE_VERSION = 4;
 
 export type WorkflowStage =
   | "PREPARATION"
@@ -33,6 +33,7 @@ export interface RunState {
   pullRequestNumber: number | null;
   reviewAttempt: number;
   reviewHeadSha: string | null;
+  noChangesBaseSha: string | null;
   approvedHeadSha: string | null;
   mergeCommitSha: string | null;
   reviewerFeedback: string | null;
@@ -66,6 +67,7 @@ export function createInitialRunState(
     pullRequestNumber,
     reviewAttempt: 0,
     reviewHeadSha: null,
+    noChangesBaseSha: null,
     approvedHeadSha: null,
     mergeCommitSha: null,
     reviewerFeedback: null,
@@ -192,6 +194,10 @@ export function validateRunState(
     `${source}.reviewHeadSha`,
   );
   assertNullableSha(
+    value.noChangesBaseSha,
+    `${source}.noChangesBaseSha`,
+  );
+  assertNullableSha(
     value.approvedHeadSha,
     `${source}.approvedHeadSha`,
   );
@@ -257,7 +263,11 @@ function migrateRunState(
     return value;
   }
 
-  if (value.version !== 1 && value.version !== 2) {
+  if (
+    value.version !== 1 &&
+    value.version !== 2 &&
+    value.version !== 3
+  ) {
     throw new Error(
       `${source}.version must be ${RUN_STATE_VERSION}.`,
     );
@@ -278,6 +288,7 @@ function migrateRunState(
   return {
     ...v2,
     version: RUN_STATE_VERSION,
+    noChangesBaseSha: null,
     preparationAttempt: 0,
     blockReason: null,
     failureKind: null,

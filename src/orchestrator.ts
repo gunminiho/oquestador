@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 import {
   ConversationTerminalError,
@@ -12,6 +14,7 @@ import {
 } from "./GitHubClient";
 import {
   buildImplementationMessage,
+  buildNoChangesReviewMessage,
   buildPreparationMessage,
   buildReviewMessage,
   repositoryName,
@@ -35,6 +38,9 @@ import {
 import {
   DockerGitWorktreeManager,
 } from "./WorkspaceManager";
+
+const execFileAsync =
+  promisify(execFile);
 
 interface AgentClient {
   createConversation(options: {
@@ -344,9 +350,50 @@ export async function runWorkflow(
             parseImplementationResult(
               implementationResponse,
             ),
-        );
+      );
 
       try {
+        if (
+          implementationResult
+            .status ===
+          "NO_CHANGES_REQUIRED"
+        ) {
+          const baseSha =
+            await validateNoChangesRequired(
+              task,
+            );
+
+          runState =
+            saveState(
+              options.store,
+              {
+                ...runState,
+                pullRequestNumber: null,
+                noChangesBaseSha:
+                  baseSha,
+              },
+            );
+
+          runState =
+            saveState(
+              options.store,
+              {
+                ...runState,
+                reviewerFeedback:
+                  null,
+                workflowState:
+                  "REVIEWING",
+                failureKind: null,
+                failureMessage: null,
+                activeStage: null,
+                activeConversationId:
+                  null,
+              },
+            );
+
+          continue;
+        }
+
         if (
           github
             .ensureBranchPublished !==
@@ -436,6 +483,8 @@ export async function runWorkflow(
               ...runState,
               pullRequestNumber:
                 resolvedPullRequestNumber,
+              noChangesBaseSha:
+                null,
             },
           );
       } catch (
@@ -484,7 +533,10 @@ export async function runWorkflow(
       if (
         runState
           .pullRequestNumber ===
-        null
+          null &&
+        runState
+          .noChangesBaseSha ===
+          null
       ) {
         runState =
           persistFailed(
@@ -500,9 +552,165 @@ export async function runWorkflow(
         );
       }
 
+      if (
+        runState
+          .noChangesBaseSha !==
+        null
+      ) {
+        let baseSha: string;
+
+        try {
+          baseSha =
+            await validateNoChangesRequired(
+              task,
+              runState
+                .noChangesBaseSha,
+            );
+        } catch (
+          error: unknown
+        ) {
+          persistFailed(
+            options.store,
+            runState,
+            "WORKFLOW",
+            errorMessage(error),
+            false,
+          );
+
+          throw error;
+        }
+
+        if (
+          runState.reviewHeadSha !==
+            baseSha ||
+          runState.activeStage !==
+            "REVIEW"
+        ) {
+          runState =
+            saveState(
+              options.store,
+              {
+                ...runState,
+                reviewAttempt:
+                  runState
+                    .reviewAttempt +
+                  1,
+                reviewHeadSha:
+                  baseSha,
+                approvedHeadSha:
+                  null,
+                activeStage: null,
+                activeConversationId:
+                  null,
+                reviewConversationId:
+                  null,
+              },
+            );
+        }
+
+        const reviewerResponse =
+          await runAgentStage(
+            options,
+            runState,
+            "REVIEW",
+            buildNoChangesReviewMessage(
+              task,
+              runState
+                .reviewHeadSha ??
+                baseSha,
+            ),
+          );
+
+        runState =
+          loadSavedState(
+            options.store,
+            task.id,
+          );
+
+        console.log(
+          "--- Reviewer response ---\n",
+        );
+        console.log(
+          reviewerResponse,
+        );
+
+        const result =
+          persistFailedOnError(
+            options.store,
+            runState,
+            () => {
+              const verdict =
+                parseReviewerVerdict(
+                  reviewerResponse,
+                );
+
+              return {
+                verdict,
+                nextState:
+                  nextStateAfterReview(
+                    verdict,
+                    {
+                      noChangesRequired:
+                        true,
+                    },
+                  ),
+              };
+            },
+          );
+
+        runState =
+          saveState(
+            options.store,
+            {
+              ...runState,
+              lastReviewerVerdict:
+                result.verdict,
+              reviewerFeedback:
+                result.verdict ===
+                "CHANGES_REQUESTED"
+                  ? reviewerResponse
+                  : runState
+                      .reviewerFeedback,
+              workflowState:
+                result.nextState,
+              noChangesBaseSha:
+                result.verdict ===
+                "CHANGES_REQUESTED"
+                  ? null
+                  : runState
+                      .noChangesBaseSha,
+              approvedHeadSha: null,
+              mergeCommitSha: null,
+              failureKind: null,
+              failureMessage: null,
+              activeStage: null,
+              activeConversationId:
+                null,
+            },
+          );
+
+        console.log(
+          `\nVerdict: ${result.verdict}`,
+        );
+        console.log(
+          `Next state: ${runState.workflowState}`,
+        );
+
+        continue;
+      }
+
       const pullRequestNumber =
         runState
           .pullRequestNumber;
+
+      if (
+        pullRequestNumber ===
+        null
+      ) {
+        throw new Error(
+          "Review cannot start without a Pull Request number.",
+        );
+      }
 
       const pullRequest =
         await getValidatedPullRequest(
@@ -1082,6 +1290,130 @@ function validatePullRequestForTask(
       `Pull Request #${pullRequest.number} is already merged.`,
     );
   }
+}
+
+async function validateNoChangesRequired(
+  task: WorkflowTask,
+  expectedBaseSha?: string,
+): Promise<string> {
+  const baseRef =
+    `origin/${task.baseBranch}`;
+
+  await git(
+    task.workspace,
+    [
+      "fetch",
+      "origin",
+      task.baseBranch,
+    ],
+  );
+
+  const status =
+    await git(
+      task.workspace,
+      [
+        "status",
+        "--porcelain",
+      ],
+    );
+
+  if (status.trim() !== "") {
+    throw new Error(
+      "NO_CHANGES_REQUIRED is invalid because the worktree has local changes.",
+    );
+  }
+
+  const headSha =
+    (
+      await git(
+        task.workspace,
+        [
+          "rev-parse",
+          "HEAD",
+        ],
+      )
+    ).trim();
+
+  const baseSha =
+    (
+      await git(
+        task.workspace,
+        [
+          "rev-parse",
+          baseRef,
+        ],
+      )
+    ).trim();
+
+  if (
+    expectedBaseSha !== undefined &&
+    baseSha !== expectedBaseSha
+  ) {
+    throw new Error(
+      `NO_CHANGES_REQUIRED base SHA changed from ${expectedBaseSha} to ${baseSha}.`,
+    );
+  }
+
+  const aheadCount =
+    Number(
+      (
+        await git(
+          task.workspace,
+          [
+            "rev-list",
+            "--count",
+            `${baseRef}..HEAD`,
+          ],
+        )
+      ).trim(),
+    );
+
+  if (
+    !Number.isInteger(aheadCount) ||
+    aheadCount > 0
+  ) {
+    throw new Error(
+      "NO_CHANGES_REQUIRED is invalid because HEAD has commits ahead of the base branch.",
+    );
+  }
+
+  if (headSha !== baseSha) {
+    throw new Error(
+      `NO_CHANGES_REQUIRED is invalid because HEAD ${headSha} is not origin/${task.baseBranch} ${baseSha}.`,
+    );
+  }
+
+  await git(
+    task.workspace,
+    [
+      "diff",
+      "--quiet",
+      baseRef,
+      "HEAD",
+    ],
+  );
+
+  return baseSha;
+}
+
+async function git(
+  workspace: string,
+  args: string[],
+): Promise<string> {
+  const { stdout } =
+    await execFileAsync(
+      "git",
+      [
+        "-C",
+        workspace,
+        ...args,
+      ],
+      {
+        encoding: "utf8",
+      },
+    );
+
+  return stdout;
 }
 
 function loadOrCreateRunState(
