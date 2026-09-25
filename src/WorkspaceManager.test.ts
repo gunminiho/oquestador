@@ -69,7 +69,7 @@ class FakeDocker {
 
     if (
       joined.includes(
-        "/projects/.orchestrator-worktrees/task-1 rev-parse HEAD",
+        `${expectedWorktree()} rev-parse HEAD`,
       )
     ) {
       if (
@@ -148,7 +148,7 @@ test(
     assert.equal(
       worktreePathForTask(
         "/projects/.orchestrator-worktrees/",
-        "task-1",
+        task(),
       ),
       expectedWorktree(),
     );
