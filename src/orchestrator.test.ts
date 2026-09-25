@@ -38,14 +38,20 @@ class FakeClient {
   async createConversation(options: {
     message: string;
     conversationId?: string;
-  }): Promise<{ id: string }> {
+  }): Promise<{
+    id: string;
+    execution_status: string;
+  }> {
     this.createCount += 1;
     this.messages.push(options.message);
     const id =
       options.conversationId ?? `conversation-${this.createCount}`;
     this.statuses.set(id, "finished");
     this.responses.set(id, this.responseForMessage(options.message));
-    return { id };
+    return {
+      id,
+      execution_status: "finished",
+    };
   }
 
   async getConversation(
