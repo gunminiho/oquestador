@@ -281,3 +281,103 @@ test(
     );
   },
 );
+
+
+test(
+  "transient 404 polling fails after its bounded retry budget",
+  async () => {
+    const client =
+      new OpenHandsClient(
+        "http://test",
+        "key",
+        {
+          fetchFn:
+            (async () =>
+              new Response(
+                "missing",
+                {
+                  status: 404,
+                },
+              )) as typeof fetch,
+          sleep:
+            async () => {},
+          maxTransient404s:
+            1,
+        },
+      );
+
+    await assert.rejects(
+      client.waitUntilFinished(
+        "c",
+        {
+          pollIntervalMs: 0,
+        },
+      ),
+      OpenHandsTransientError,
+    );
+  },
+);
+
+test(
+  "deterministic conversation creation recovers from a 409 by reading the existing id",
+  async () => {
+    let calls = 0;
+
+    const client =
+      new OpenHandsClient(
+        "http://test",
+        "key",
+        {
+          fetchFn:
+            (async (
+              _input,
+              init,
+            ) => {
+              calls += 1;
+
+              if (
+                init?.method ===
+                "POST"
+              ) {
+                return new Response(
+                  "already exists",
+                  {
+                    status: 409,
+                  },
+                );
+              }
+
+              return jsonResponse({
+                id: "fixed-id",
+                execution_status:
+                  "running",
+              });
+            }) as typeof fetch,
+          sleep:
+            async () => {},
+        },
+      );
+
+    const result =
+      await client
+        .createConversation({
+          workspace:
+            "/projects/task",
+          agentProfileId:
+            "profile",
+          message:
+            "hello",
+          conversationId:
+            "fixed-id",
+        });
+
+    assert.equal(
+      result.id,
+      "fixed-id",
+    );
+    assert.equal(
+      calls,
+      2,
+    );
+  },
+);
