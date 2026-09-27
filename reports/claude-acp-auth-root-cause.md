@@ -6,7 +6,7 @@ Date: 2026-09-27
 
 PR: `#8`
 
-Reviewed starting SHA for this correction pass: `25bbc0d4d6a93f56fbf07293e91a4df71ec8d96d`
+Implementation baseline before this evidence-only update: `c50ceb24d22120858c96a9d10286f3480f542b35`
 
 ## Cause Root
 
@@ -16,7 +16,7 @@ In `openhands-sdk==1.49.4`, Claude ACP builds the child environment from `defaul
 
 This is separate from the previous model+effort investigation. The failed conversation already reached `@agentclientprotocol/claude-agent-acp` 0.63.0, showed `acp_model="opus[1m]"`, `acp_current_model_id="opus[1m]"`, and ended before any useful model response with `prompt_tokens=0` and `completion_tokens=0`.
 
-The current credential state is a separate external blocker. A follow-up SDK+ACP smoke after the repository fix proved the fixed path delivers a `CLAUDE_CODE_OAUTH_TOKEN` into the Claude ACP route, but Claude Code then rejected the value resolved through that path with `401 Invalid bearer token`. An earlier direct Claude Code OAuth probe had succeeded with an in-memory token available during that investigation; that result does not prove the later `LookupSecret`-resolved value remained valid or identical. In this follow-up workspace the Claude credentials are absent from `process.env`, and the local Agent Canvas backend returns HTTP 403 for settings/profile APIs with the available session key, so the current plaintext OAuth/API-key values cannot be re-read or compared safely here.
+A follow-up SDK+ACP smoke after the repository fix initially proved that the fixed path delivered `CLAUDE_CODE_OAUTH_TOKEN` into the Claude ACP route, but the credential resolved at that time was rejected by Claude Code with `401 Invalid bearer token`. That established a second, operational credential problem after the repository boundary had been fixed. On 2026-09-27 the user generated a fresh long-lived Claude Code OAuth token with `claude setup-token`, replaced only the stored `CLAUDE_CODE_OAUTH_TOKEN` value in Agent Canvas Secrets without exposing it, activated the existing `claude` ACP profile, and started a fresh Agent Canvas conversation. The prompt `Responde únicamente con: CLAUDE_AUTH_OK` received exactly `CLAUDE_AUTH_OK`. This supplies the previously missing end-to-end verification across Agent Canvas, the Claude profile, secret resolution/injection, `claude-agent-acp`, the Claude provider, and an assistant response. Neither `ACPAuthRequired` nor `401 Invalid bearer token` occurred in that post-renewal smoke.
 
 ## Evidence
 
@@ -58,8 +58,9 @@ Credential/provenance evidence:
 Provider probes:
 
 - Original OAuth-only direct Claude Code probe used the decrypted local `CLAUDE_CODE_OAUTH_TOKEN` in memory, a temporary `HOME`, Claude binary `--print`, model `haiku`, and a small max budget. It exited `0` with sanitized output tail `ok`, so the credential accepted direct Claude Code at that time.
-- Follow-up OpenHands SDK+Claude ACP smoke used the fixed `LookupSecret` path with a local in-process resolver. The child started `@agentclientprotocol/claude-agent-acp` 0.63.0, received the OAuth secret, and then failed at the provider boundary with sanitized result `[-32603] Internal error: Failed to authenticate. API Error: 401 Invalid bearer token: {"errorKind": "authentication_failed"}`. This proves the repository boundary was no longer dropping OAuth; it does not prove why the later resolved credential differed from, or aged differently than, the earlier direct-probe credential.
-- API-key-only direct probe could not be performed from this follow-up workspace because the readable local process environment did not contain `ANTHROPIC_API_KEY`, and Agent Canvas settings/secret APIs returned HTTP 403 with the available session key. The task-provided fact that `ANTHROPIC_API_KEY` exists in the main container is accepted, but Docker/backend access was not available here to inspect that container safely.
+- Follow-up OpenHands SDK+Claude ACP smoke used the fixed `LookupSecret` path with a local in-process resolver. The child started `@agentclientprotocol/claude-agent-acp` 0.63.0, received the OAuth secret, and then failed at the provider boundary with sanitized result `[-32603] Internal error: Failed to authenticate. API Error: 401 Invalid bearer token: {"errorKind": "authentication_failed"}`. This proved the repository boundary was no longer dropping OAuth and isolated the remaining failure to the credential available at that time.
+- After renewing `CLAUDE_CODE_OAUTH_TOKEN` in Agent Canvas Secrets, an operator-observed fresh Agent Canvas conversation using the existing `claude` ACP profile returned exactly `CLAUDE_AUTH_OK` to the prompt `Responde únicamente con: CLAUDE_AUTH_OK`. This is the successful end-to-end smoke required after the fix. The secret value was never copied into the repository or report.
+- API-key-only direct probe could not be performed from this follow-up workspace because the readable local process environment did not contain `ANTHROPIC_API_KEY`, and Agent Canvas settings/secret APIs returned HTTP 403 with the available session key. This is no longer a blocker because the intended OAuth path is now verified end-to-end.
 
 ## Fix
 
@@ -90,7 +91,8 @@ Demonstrated:
 - Treating every `OH_AGENT_PROFILE_ID` value as Claude would expose `CLAUDE_CODE_OAUTH_TOKEN` to non-Claude profiles; this has been removed.
 - OpenHands SDK 1.49.4 strips API key/base URL when OAuth is present, so OAuth has precedence over API-key fallback.
 - When OAuth is seeded into `state.secret_registry`, it reaches `claude-agent-acp`.
-- The later OAuth credential resolved through the SDK+ACP smoke was not accepted by Claude Code through the ACP route; the observable provider error was `401 Invalid bearer token`.
+- Before credential renewal, the OAuth credential resolved through the SDK+ACP smoke was not accepted by Claude Code through the ACP route; the observable provider error was `401 Invalid bearer token`.
+- After renewing the stored OAuth token, the full Agent Canvas Claude ACP path produced an assistant response and no longer returned either `ACPAuthRequired` or `401 Invalid bearer token`.
 
 Discarded:
 
@@ -102,7 +104,6 @@ UNPROVEN:
 
 - Whether the main container's `ANTHROPIC_API_KEY` would work in isolation today. The task states it exists, but it was not accessible from this workspace without Docker/backend access.
 - Whether the earlier direct OAuth success and later ACP OAuth 401 were caused by credential rotation, expiry/revocation, a different resolver value, or Claude Code state outside the repository. The repository-controlled boundary is proven by request-body tests and child-env probes; the external credential lifecycle is not fully observable from this follow-up workspace.
-- A full Agent Canvas conversation response after the repository fix. The fixed boundary was exercised through SDK+ACP, but the available OAuth credential currently fails provider authentication before an assistant response can be produced.
 
 ## Commands And Sanitized Results
 
@@ -117,14 +118,27 @@ UNPROVEN:
 - ACP child env probe from the original investigation: `CLAUDE_CODE_OAUTH_TOKEN=true`, `ANTHROPIC_API_KEY=false`, `ANTHROPIC_BASE_URL=false`, `CLAUDECODE=false`.
 - Direct OAuth smoke from the original investigation: Claude Code returned sanitized tail `ok`.
 - Local backend access after reviewer feedback: `/api/settings`, `/api/agent-profiles`, and `/api/conversations/search` returned HTTP 403 with the available session key.
-- OpenHands SDK+Claude ACP smoke after reviewer feedback: fixed `LookupSecret` path delivered the OAuth credential to `claude-agent-acp` 0.63.0; provider returned sanitized `401 Invalid bearer token`; no assistant response was produced.
-- Docker availability: Docker CLI exists, but daemon/socket was unavailable, so no Docker image build or main-container inspection was performed.
-- Regression checks after this follow-up: `npm test` and `npm run typecheck` pass.
+- OpenHands SDK+Claude ACP smoke before credential renewal: fixed `LookupSecret` path delivered the OAuth credential to `claude-agent-acp` 0.63.0; provider returned sanitized `401 Invalid bearer token`; no assistant response was produced.
+- Manual Agent Canvas smoke after credential renewal: existing `claude` ACP profile, fresh conversation, prompt `Responde únicamente con: CLAUDE_AUTH_OK`, exact response `CLAUDE_AUTH_OK`; no `ACPAuthRequired` and no `401 Invalid bearer token` observed. No credential value was captured in this evidence.
+- Docker availability in the follow-up agent workspace: Docker CLI existed, but daemon/socket was unavailable, so no Docker image build or main-container inspection was performed there.
+- Regression checks on the implementation branch before this evidence-only update: `npm test`, `npm run typecheck`, and `git diff --check origin/main..HEAD` passed.
 
 ## Smoke Status
 
+PASS.
+
 The original direct Claude Code OAuth smoke passed and did not show `ACPAuthRequired`.
 
-The post-fix SDK+ACP smoke no longer demonstrates the repository's previous omission of `StartConversationRequest.secrets`; it demonstrates the next boundary instead. The OAuth credential is delivered to Claude ACP and the provider rejects the resolved value with `401 Invalid bearer token`.
+After the repository fix, the SDK+ACP smoke proved that the OAuth secret was reaching `claude-agent-acp`; the credential stored at that moment was rejected with `401 Invalid bearer token`. The OAuth token was then renewed through the normal Claude Code flow and the stored `CLAUDE_CODE_OAUTH_TOKEN` in Agent Canvas was replaced without exposing its value.
 
-Because the resolved credential was rejected in the available ACP smoke, and this follow-up workspace cannot re-read or replace the backend secrets, criterion 25 cannot be completed here with a successful assistant response. The required operational action is to renew or replace `CLAUDE_CODE_OAUTH_TOKEN` in the OpenHands/Agent Canvas secret store, then rerun the same minimal Claude ACP smoke. The repository should not hide that with an API-key fallback workaround while OAuth remains configured as the dominant Claude credential.
+A fresh Agent Canvas conversation using the existing `claude` ACP profile was then executed with the prompt:
+
+`Responde únicamente con: CLAUDE_AUTH_OK`
+
+The assistant returned exactly:
+
+`CLAUDE_AUTH_OK`
+
+Therefore the current end-to-end path is verified: Agent Canvas -> Claude ACP profile -> Agent Canvas secret resolution -> `CLAUDE_CODE_OAUTH_TOKEN` injection -> `claude-agent-acp` -> Claude provider -> assistant response. The original `ACPAuthRequired` is resolved, the temporary stale/invalid-token `401` is resolved by credential renewal, and no API-key fallback workaround is required.
+
+No token value, API key, Authorization header, cookie, or full auth file is included in this report.
