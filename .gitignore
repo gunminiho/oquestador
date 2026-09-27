@@ -2,6 +2,7 @@
 dist/
 coverage/
 .orchestrator/runs/
+.orchestrator/control-plane/
 
 .env
 .env.*
