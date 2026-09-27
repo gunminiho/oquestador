@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   ConversationTerminalError,
@@ -512,6 +519,153 @@ test(
         "/api/conversations",
       ],
     );
+
+    assert.deepEqual(
+      capturedBody?.secrets,
+      {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          kind: "LookupSecret",
+          url:
+            "/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN",
+        },
+      },
+    );
+  },
+);
+
+test(
+  "createConversation detects the local Claude profile used by the orchestrator",
+  async () => {
+    const previousHome =
+      process.env.HOME;
+    const previousProfileIds =
+      process.env
+        .OH_CLAUDE_AGENT_PROFILE_IDS;
+    const previousSecretRefs =
+      process.env
+        .OH_CONVERSATION_SECRET_REFS;
+
+    const home =
+      mkdtempSync(
+        join(
+          tmpdir(),
+          "openhands-client-home-",
+        ),
+      );
+    const profileDir =
+      join(
+        home,
+        ".openhands",
+        "agent-profiles",
+      );
+    mkdirSync(profileDir, {
+      recursive: true,
+    });
+
+    const claudeProfileId =
+      "6dfd17c3-07dc-41f1-b4aa-8c02fcafb5ec";
+
+    writeFileSync(
+      join(
+        profileDir,
+        "claude.json",
+      ),
+      JSON.stringify({
+        id: claudeProfileId,
+        name: "claude",
+        agent_kind: "acp",
+        secret_refs: null,
+        agent_settings: {
+          acp_server:
+            "claude-code",
+          acp_command: [
+            "claude-agent-acp",
+          ],
+        },
+      }),
+    );
+
+    let capturedBody:
+      | Record<string, unknown>
+      | undefined;
+
+    try {
+      process.env.HOME = home;
+      delete process.env
+        .OH_CLAUDE_AGENT_PROFILE_IDS;
+      delete process.env
+        .OH_CONVERSATION_SECRET_REFS;
+
+      const client =
+        new OpenHandsClient(
+          "http://test",
+          "key",
+          {
+            fetchFn:
+              (async (
+                _input,
+                init,
+              ) => {
+                capturedBody =
+                  JSON.parse(
+                    String(init?.body),
+                  ) as Record<
+                    string,
+                    unknown
+                  >;
+
+                return jsonResponse({
+                  id: "c",
+                  execution_status:
+                    "running",
+                });
+              }) as typeof fetch,
+          },
+        );
+
+      await client
+        .createConversation({
+          workspace:
+            "/projects/task",
+          agentProfileId:
+            claudeProfileId,
+          message:
+            "hello",
+        });
+    } finally {
+      if (
+        previousHome === undefined
+      ) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME =
+          previousHome;
+      }
+
+      if (
+        previousProfileIds ===
+        undefined
+      ) {
+        delete process.env
+          .OH_CLAUDE_AGENT_PROFILE_IDS;
+      } else {
+        process.env
+          .OH_CLAUDE_AGENT_PROFILE_IDS =
+          previousProfileIds;
+      }
+
+      if (
+        previousSecretRefs ===
+        undefined
+      ) {
+        delete process.env
+          .OH_CONVERSATION_SECRET_REFS;
+      } else {
+        process.env
+          .OH_CONVERSATION_SECRET_REFS =
+          previousSecretRefs;
+      }
+    }
 
     assert.deepEqual(
       capturedBody?.secrets,
