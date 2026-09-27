@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 export interface ConversationInfo {
   id: string;
   execution_status: string;
@@ -23,6 +27,7 @@ export interface OpenHandsClientOptions {
   maxBackoffMs?: number;
   conversationSecretRefs?: string[];
   autoClaudeOauthSecretRef?: boolean;
+  claudeAgentProfileIds?: string[];
   fetchFn?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -81,6 +86,8 @@ export class OpenHandsClient {
   private readonly baseBackoffMs: number;
   private readonly maxBackoffMs: number;
   private readonly conversationSecretRefs: string[];
+  private readonly autoClaudeOauthSecretRef: boolean;
+  private readonly claudeAgentProfileIds: Set<string>;
   private readonly fetchFn: typeof fetch;
   private readonly sleep: (
     ms: number,
@@ -103,21 +110,18 @@ export class OpenHandsClient {
     this.maxBackoffMs =
       options.maxBackoffMs ?? 4_000;
 
-    const includeClaudeOauthSecretRef =
+    this.autoClaudeOauthSecretRef =
       options.autoClaudeOauthSecretRef ??
       true;
 
-    const defaultSecretRefs =
-      includeClaudeOauthSecretRef
-        ? [
-            CLAUDE_CODE_OAUTH_TOKEN,
-          ]
-        : [];
+    this.claudeAgentProfileIds =
+      getClaudeAgentProfileIds(
+        options.claudeAgentProfileIds,
+      );
 
     this.conversationSecretRefs =
       normalizeConversationSecretRefs(
         [
-          ...defaultSecretRefs,
           ...(options.conversationSecretRefs ??
             parseConversationSecretRefs(
               process.env
@@ -163,17 +167,33 @@ export class OpenHandsClient {
         autotitle: false,
       };
 
+      const secretRefs =
+        this.conversationSecretRefs.slice();
+
       if (
-        this.conversationSecretRefs.length >
-        0
+        this.autoClaudeOauthSecretRef &&
+        this.isClaudeAgentProfile(
+          options.agentProfileId,
+        )
       ) {
+        secretRefs.unshift(
+          CLAUDE_CODE_OAUTH_TOKEN,
+        );
+      }
+
+      const normalizedSecretRefs =
+        normalizeConversationSecretRefs(
+          secretRefs,
+        );
+
+      if (normalizedSecretRefs.length > 0) {
         body.secrets =
           Object.fromEntries(
-            this.conversationSecretRefs
+            normalizedSecretRefs
               .map((name) => [
                 name,
                 {
-                  kind: "lookup",
+                  kind: "LookupSecret",
                   url:
                     `/api/settings/secrets/${encodeURIComponent(name)}`,
                 },
@@ -206,6 +226,14 @@ export class OpenHandsClient {
 
       throw error;
     }
+  }
+
+  private isClaudeAgentProfile(
+    agentProfileId: string,
+  ): boolean {
+    return this.claudeAgentProfileIds.has(
+      agentProfileId,
+    );
   }
 
   async getConversation(
@@ -429,6 +457,89 @@ export class OpenHandsClient {
     await this.sleep(delay);
   }
 
+}
+
+function getClaudeAgentProfileIds(
+  configuredIds:
+    | string[]
+    | undefined,
+): Set<string> {
+  return new Set(
+    normalizeList(
+      [
+        ...(configuredIds ??
+          parseList(
+            process.env
+              .OH_CLAUDE_AGENT_PROFILE_IDS,
+          )),
+        ...readLocalClaudeAgentProfileIds(),
+      ],
+    ),
+  );
+}
+
+function parseList(
+  value: string | undefined,
+): string[] {
+  return normalizeList(
+    value?.split(",") ?? [],
+  );
+}
+
+function normalizeList(
+  values: string[],
+): string[] {
+  const seen =
+    new Set<string>();
+
+  return values
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      if (seen.has(item)) {
+        return false;
+      }
+
+      seen.add(item);
+      return true;
+    });
+}
+
+function readLocalClaudeAgentProfileIds(): string[] {
+  try {
+    const profile = JSON.parse(
+      readFileSync(
+        join(
+          homedir(),
+          ".openhands",
+          "agent-profiles",
+          "claude.json",
+        ),
+        "utf8",
+      ),
+    ) as unknown;
+
+    if (
+      typeof profile !== "object" ||
+      profile === null
+    ) {
+      return [];
+    }
+
+    const record =
+      profile as Record<string, unknown>;
+
+    return [
+      record.id,
+      record.name,
+    ].filter(
+      (value): value is string =>
+        typeof value === "string" &&
+        value.length > 0,
+    );
+  } catch {
+    return [];
+  }
 }
 
 function parseConversationSecretRefs(

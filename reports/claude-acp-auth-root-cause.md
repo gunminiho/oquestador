@@ -49,13 +49,13 @@ Provider probes:
 
 ## Fix
 
-`OpenHandsClient` now adds the Claude OAuth Agent Canvas lookup directly to the create request, without reading `/api/agent-profiles` or any other backend preflight endpoint:
+`OpenHandsClient` now adds the Claude OAuth Agent Canvas lookup directly to the create request for detected Claude profiles, without reading `/api/agent-profiles` or any other backend preflight endpoint:
 
 ```json
 {
   "secrets": {
     "CLAUDE_CODE_OAUTH_TOKEN": {
-      "kind": "lookup",
+      "kind": "LookupSecret",
       "url": "/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN"
     }
   }
@@ -64,7 +64,7 @@ Provider probes:
 
 Agent Canvas resolves that lookup server-side from its secret store. The orchestrator never reads, logs, copies, or persists the secret value.
 
-This connects the secret to the real orchestrator flow without requiring a new externally configured `OH_CONVERSATION_SECRET_REFS` variable and without depending on `/api/agent-profiles`, which is not available to this workspace's session key. `OH_CONVERSATION_SECRET_REFS` remains available for explicit extra lookups, and callers that intentionally run non-Claude profiles can disable the default Claude lookup with `autoClaudeOauthSecretRef: false`.
+This connects the secret to the real orchestrator flow without requiring a new externally configured `OH_CONVERSATION_SECRET_REFS` variable and without depending on `/api/agent-profiles`, which is not available to this workspace's session key. The automatic OAuth lookup is scoped to known Claude profile ids/names from `OH_CLAUDE_AGENT_PROFILE_IDS` and the local `~/.openhands/agent-profiles/claude.json`; other profiles do not receive the default Claude OAuth lookup. `OH_CONVERSATION_SECRET_REFS` remains available for explicit extra lookups, and callers can disable the default Claude lookup with `autoClaudeOauthSecretRef: false`.
 
 ## Hypotheses
 
@@ -83,11 +83,12 @@ This connects the secret to the real orchestrator flow without requiring a new e
 - Secret store presence probe: `CLAUDE_CODE_OAUTH_TOKEN=present`, `ANTHROPIC_API_KEY=absent`, values not printed.
 - ACP child env probe: `CLAUDE_CODE_OAUTH_TOKEN=true`, `ANTHROPIC_API_KEY=false`.
 - Direct OAuth smoke: Claude Code returned `ok`.
-- Request-boundary regression test: `createConversation()` sends `secrets.CLAUDE_CODE_OAUTH_TOKEN={kind:"lookup",url:"/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN"}` without passing `conversationSecretRefs` manually and without calling `/api/agent-profiles`.
-- Opt-out guard test: `autoClaudeOauthSecretRef:false` creates the conversation without a `secrets` field and still does not call `/api/agent-profiles`.
+- Request-boundary regression test: `createConversation()` sends `secrets.CLAUDE_CODE_OAUTH_TOKEN={kind:"LookupSecret",url:"/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN"}` for a detected Claude profile without passing `conversationSecretRefs` manually and without calling `/api/agent-profiles`.
+- Scope/opt-out guard tests: non-Claude profiles do not receive the default Claude OAuth lookup, and `autoClaudeOauthSecretRef:false` creates a Claude-profile conversation without a `secrets` field.
 - Local checks after the fix: `npm test` and `npm run typecheck` passed.
 - Local backend access check after the reviewer feedback: `/api/conversations/search`, `/api/settings`, and `/api/agent-profiles` each returned HTTP 403 with the available session key.
-- Corrected Agent Canvas smoke attempt: direct `POST /api/conversations` with the fixed sanitized lookup request returned HTTP 405 in this workspace before a conversation was created.
+- OpenHands SDK contract test after reviewer feedback: the generated create payload validates against `StartConversationRequest` from installed `openhands-sdk==1.49.4`, and the secret source deserializes as `LookupSecret`. The previous `kind:"lookup"` shape is rejected by that model and was corrected in this commit.
+- Corrected Agent Canvas smoke attempt: direct `POST /api/conversations` with the sanitized `LookupSecret` request returned HTTP 405 in this workspace before a conversation was created.
 - Docker availability: Docker CLI exists, but daemon socket was unavailable, so no Docker image build or main-container inspection was performed.
 
 ## Smoke Status

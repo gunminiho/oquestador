@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 
 import {
   ConversationTerminalError,
@@ -442,7 +443,7 @@ test(
       capturedBody?.secrets,
       {
         CLAUDE_CODE_OAUTH_TOKEN: {
-          kind: "lookup",
+          kind: "LookupSecret",
           url:
             "/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN",
         },
@@ -464,6 +465,9 @@ test(
         "http://test",
         "key",
         {
+          claudeAgentProfileIds: [
+            "claude-profile",
+          ],
           fetchFn:
             (async (
               input,
@@ -513,7 +517,7 @@ test(
       capturedBody?.secrets,
       {
         CLAUDE_CODE_OAUTH_TOKEN: {
-          kind: "lookup",
+          kind: "LookupSecret",
           url:
             "/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN",
         },
@@ -523,7 +527,7 @@ test(
 );
 
 test(
-  "createConversation can disable the default Claude OAuth lookup",
+  "createConversation does not include default Claude OAuth lookup for other profiles",
   async () => {
     const paths: string[] = [];
     let capturedBody:
@@ -586,6 +590,145 @@ test(
       "secrets" in
         (capturedBody ?? {}),
       false,
+    );
+  },
+);
+
+test(
+  "createConversation can disable the default Claude OAuth lookup",
+  async () => {
+    let capturedBody:
+      | Record<string, unknown>
+      | undefined;
+
+    const client =
+      new OpenHandsClient(
+        "http://test",
+        "key",
+        {
+          autoClaudeOauthSecretRef:
+            false,
+          claudeAgentProfileIds: [
+            "claude-profile",
+          ],
+          fetchFn:
+            (async (
+              _input,
+              init,
+            ) => {
+              capturedBody =
+                JSON.parse(
+                  String(init?.body),
+                ) as Record<
+                  string,
+                  unknown
+                >;
+
+              return jsonResponse({
+                id: "c",
+                execution_status:
+                  "running",
+              });
+            }) as typeof fetch,
+        },
+      );
+
+    await client
+      .createConversation({
+        workspace:
+          "/projects/task",
+        agentProfileId:
+          "claude-profile",
+        message:
+          "hello",
+      });
+
+    assert.equal(
+      "secrets" in
+        (capturedBody ?? {}),
+      false,
+    );
+  },
+);
+
+test(
+  "Claude OAuth lookup payload validates against OpenHands SDK 1.49.4",
+  async () => {
+    let capturedBody:
+      | Record<string, unknown>
+      | undefined;
+
+    const claudeProfileId =
+      "6dfd17c3-07dc-41f1-b4aa-8c02fcafb5ec";
+
+    const client =
+      new OpenHandsClient(
+        "http://test",
+        "key",
+        {
+          claudeAgentProfileIds: [
+            claudeProfileId,
+          ],
+          fetchFn:
+            (async (
+              _input,
+              init,
+            ) => {
+              capturedBody =
+                JSON.parse(
+                  String(init?.body),
+                ) as Record<
+                  string,
+                  unknown
+                >;
+
+              return jsonResponse({
+                id: "c",
+                execution_status:
+                  "running",
+              });
+            }) as typeof fetch,
+        },
+      );
+
+    await client
+      .createConversation({
+        workspace:
+          "/projects/task",
+        agentProfileId:
+          claudeProfileId,
+        message:
+          "hello",
+      });
+
+    const output = execFileSync(
+      "python",
+      [
+        "-c",
+        [
+          "import json, sys",
+          "from openhands.sdk.conversation.request import StartConversationRequest",
+          "payload = json.load(sys.stdin)",
+          "request = StartConversationRequest.model_validate(payload)",
+          "print(type(request.secrets['CLAUDE_CODE_OAUTH_TOKEN']).__name__)",
+        ].join("; "),
+      ],
+      {
+        input: JSON.stringify(
+          capturedBody,
+        ),
+        env: {
+          ...process.env,
+          OPENHANDS_SUPPRESS_BANNER:
+            "1",
+        },
+        encoding: "utf8",
+      },
+    ).trim();
+
+    assert.equal(
+      output,
+      "LookupSecret",
     );
   },
 );
