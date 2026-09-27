@@ -1,0 +1,41 @@
+{
+  "id": "orchestrator-canvas-mcp-v1",
+  "repository": {
+    "owner": "gunminiho",
+    "name": "oquestador"
+  },
+  "workspace": "/projects/oquestador",
+  "baseBranch": "main",
+  "workingBranch": "feat/orchestrator-canvas-mcp-v1",
+  "objective": "BOOT-02: integrar el Control Plane de BOOT-01 con Agent Canvas mediante un servidor MCP first-class, de forma que un agente de Canvas pueda descubrir tareas, iniciar runs, consultar progreso y solicitar pause/resume/cancel usando herramientas estructuradas, sin abrir PowerShell ni ejecutar manualmente la CLI para la operación normal. El MCP debe ser un adaptador del Control Plane HTTP existente, no una segunda implementación del workflow. Esta fase puede ampliar el Control Plane con lectura segura de tareas si es necesario, pero NO implementa todavía Program/Architect Mode, DAG multi-repo ni routing por modelo/esfuerzo de milestone (ARCH-01+).",
+  "acceptanceCriteria": [
+    "Crear un módulo MCP claramente separado, por ejemplo `src/mcp/`, que se ejecute como servidor MCP por stdio y pueda ser configurado como MCP server de un perfil Agent Canvas.",
+    "Usar el SDK oficial de Model Context Protocol para Node/TypeScript en una versión fijada por `package-lock.json`, salvo que exista una incompatibilidad demostrable; no implementar manualmente el protocolo JSON-RPC si el SDK oficial es utilizable.",
+    "Agregar scripts npm explícitos para el adaptador MCP (por ejemplo `npm run mcp`) y, si hace falta para despliegue estable, scripts de build/start documentados. La importación de módulos no debe iniciar servidores ni procesos como efecto lateral.",
+    "El MCP debe comunicarse exclusivamente con el Control Plane HTTP de BOOT-01 para las operaciones de runs; no debe importar `workflowEngine`/`runTask` para ejecutar workflows directamente ni duplicar reglas de pause/cancel/merge.",
+    "Crear un cliente HTTP tipado y testeable para el Control Plane, compartido por las tools MCP, con URL base configurable mediante `ORCHESTRATOR_CONTROL_URL` y token mediante `ORCHESTRATOR_CONTROL_TOKEN`.",
+    "Para Agent Canvas dentro de Docker, documentar y soportar `ORCHESTRATOR_CONTROL_URL=http://host.docker.internal:8787` como configuración esperada; no asumir que `127.0.0.1` dentro del contenedor es el host Windows.",
+    "No incluir `ORCHESTRATOR_CONTROL_TOKEN` en argumentos de línea de comandos, URIs, nombres de tools, logs, respuestas de error, manifests o archivos versionados. Debe viajar sólo en el header Authorization del cliente HTTP y suministrarse al proceso MCP mediante secret/env seguro.",
+    "Agregar al Control Plane un endpoint autenticado de sólo lectura `GET /api/tasks` (y si es útil `GET /api/tasks/:taskId`) que liste únicamente tareas válidas dentro de `ORCHESTRATOR_TASK_ROOT`. Debe reutilizar el resolver/validación existente, ignorar o reportar de forma segura archivos inválidos y nunca permitir path traversal.",
+    "El listado de tareas debe devolver metadata no secreta y útil para Canvas, como `taskId`, repository, baseBranch, workingBranch, objective y opcionalmente límites operativos; nunca debe devolver contenido de secrets, variables de entorno ni rutas arbitrarias fuera del task root.",
+    "Exponer como mínimo las tools MCP estructuradas: `orchestrator_health`, `orchestrator_list_tasks`, `orchestrator_start_task`, `orchestrator_list_runs`, `orchestrator_get_run`, `orchestrator_pause_run`, `orchestrator_resume_run` y `orchestrator_cancel_run`.",
+    "`orchestrator_start_task` debe aceptar como mínimo `taskId` y opcional `agentProfileId`; no aceptar paths, shell commands, arbitrary env maps ni argumentos que permitan escapar de la allowlist del Control Plane.",
+    "Las schemas MCP deben ser estrictas, pequeñas y descriptivas. Rechazar campos desconocidos cuando el SDK/schema lo permita y validar ids/strings antes de llamar al Control Plane.",
+    "Las tools deben preservar los códigos/semántica importantes del Control Plane: invalid request, unauthorized/forbidden, task/run no encontrado, conflicto de transición y error interno. No convertir un 409 de negocio en un supuesto éxito.",
+    "Las respuestas MCP deben ser concisas y útiles para un agente: incluir el `runId`, status público, workflowState, taskId y blockers/failure relevantes cuando existan, pero no volcar objetos internos completos ni stack traces.",
+    "Agregar timeouts de red razonables y errores deterministas para Control Plane inaccesible. No hacer retries ciegos de mutaciones como start/pause/resume/cancel; cualquier retry de GET debe ser acotado y seguro o puede omitirse.",
+    "El MCP no debe implementar una tool de merge directo, push directo, creación de PR directa ni ejecución arbitraria de Git/shell. Esas mutaciones siguen bajo las reglas deterministas del Orchestrator Core.",
+    "Agregar tests unitarios del cliente Control Plane con servidor/fetch fake y tests del servidor MCP usando un transporte de prueba o invocación in-process del SDK; no depender de Agent Canvas, Claude, Codex, Docker real ni red externa para los tests automáticos.",
+    "Cubrir con tests al menos: health, list_tasks, start_task, list_runs, get_run, pause, resume, cancel, auth incorrecta, Control Plane inaccesible, 404, 409, payload inválido y sanitización/no filtración del token.",
+    "Mantener todos los tests de BOOT-01 y del repositorio. Antes de entregar ejecutar `npm test`, `npm run typecheck` y `git diff --check origin/main..HEAD`.",
+    "Actualizar README con una sección BOOT-02 que explique arquitectura Canvas -> MCP -> Control Plane -> Orchestrator Core, variables necesarias, tools disponibles, límites de seguridad y troubleshooting mínimo.",
+    "Incluir un ejemplo de configuración MCP para Agent Canvas que use el servidor por stdio y obtenga `ORCHESTRATOR_CONTROL_TOKEN` desde Secrets/env; el ejemplo debe usar placeholders y nunca un token real.",
+    "Documentar el bootstrap de red: el Control Plane del host debe bindearse en una interfaz alcanzable desde el contenedor para usar `host.docker.internal` (por ejemplo `ORCHESTRATOR_CONTROL_HOST=0.0.0.0`) y seguir protegido por Bearer auth. Advertir que no debe exponerse públicamente ni desactivar auth.",
+    "Proveer un chequeo/smoke local automatizable (sin secretos reales) que pruebe el MCP contra un Control Plane fake o local y confirme que las tools se registran y traducen correctamente las respuestas.",
+    "No modificar silenciosamente el perfil `claude`/`default` de Agent Canvas ni escribir secretos en su store desde tests o código de producción. La conexión real del MCP al perfil de Canvas será un paso operativo explícito posterior al merge.",
+    "No implementar aún selección de provider/model/reasoning-effort por milestone, manifests de programa, DAG, Architect audit ni ejecución multi-repo. Dejar el MCP extensible para ARCH-01+, pero mantener este PR centrado en el puente Canvas-Control Plane.",
+    "La revisión automática del PR debe poder aprobarse con código/tests locales y metadata de GitHub. No exigir un smoke real de Agent Canvas como condición para merge; después del merge se hará un smoke operativo real desde Canvas y sólo entonces se considerará BOOT-02 operacionalmente cerrado.",
+    "No hacer merge manual desde el agente. Entregar `IMPLEMENTATION_RESULT: READY_FOR_REVIEW`; el Reviewer debe revisar el HEAD exacto publicado y el orquestador conserva la responsabilidad del merge."
+  ],
+  "maxReviewCycles": 3
+}
