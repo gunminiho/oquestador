@@ -14,7 +14,11 @@ import type {
   MergePullRequestResult,
   PullRequestDetails,
 } from "./GitHubClient";
-import { runWorkflow as runRealWorkflow } from "./orchestrator";
+import { ConversationTerminalError } from "./OpenHandsClient";
+import {
+  isResourceLimitEvidence,
+  runWorkflow as runRealWorkflow,
+} from "./orchestrator";
 import {
   createInitialRunState,
   RunStateStore,
@@ -33,6 +37,7 @@ class FakeClient {
   finalCount = 0;
   messages: string[] = [];
   reviewVerdicts: string[] = ["APPROVED"];
+  reviewResponses: string[] = [];
   reviewCount = 0;
   preparationResponse = "PREPARATION_RESULT: READY";
   implementationResponse = [
@@ -102,9 +107,17 @@ class FakeClient {
 
   private responseForMessage(message: string): string {
     if (message.includes("Actúa exclusivamente como Reviewer")) {
+      this.reviewCount += 1;
+
+      const customResponse =
+        this.reviewResponses.shift();
+
+      if (customResponse !== undefined) {
+        return customResponse;
+      }
+
       const verdict =
         this.reviewVerdicts.shift() ?? "APPROVED";
-      this.reviewCount += 1;
 
       if (verdict === "CHANGES_REQUESTED") {
         return [
@@ -720,7 +733,7 @@ test("continues through repeated requested changes until reviewer approves", asy
 
   const finalState = await runWorkflow({
     client,
-    task: task(),
+    task: task({ maxReviewCycles: 10 }),
     store,
     agentProfileId: "profile",
     pollIntervalMs: 0,
@@ -1242,4 +1255,394 @@ test("persists FAILED when reviewer final response is invalid", async () => {
   assert.equal(saved?.workflowState, "FAILED");
   assert.equal(saved?.activeStage, null);
   assert.equal(saved?.activeConversationId, null);
+});
+
+test("maxReviewCycles reached ends BLOCKED without merge", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  client.reviewVerdicts = [
+    "CHANGES_REQUESTED",
+    "CHANGES_REQUESTED",
+  ];
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task({ maxReviewCycles: 2 }),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "BLOCKED");
+  assert.equal(finalState.implementationCycle, 2);
+  assert.match(
+    finalState.blockReason ?? "",
+    /maxReviewCycles=2/,
+  );
+  assert.equal(github.mergeCount, 0);
+});
+
+test("implementation BLOCKED_EXTERNAL ends BLOCKED with structured reason", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  client.implementationResponse = [
+    "IMPLEMENTATION_RESULT: BLOCKED_EXTERNAL",
+    "IMPLEMENTATION_REASON: waiting for an external approval",
+    "BLOCKER_KEY: ext-approval-1",
+  ].join("\n");
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "BLOCKED");
+  assert.equal(
+    finalState.blockReason,
+    "waiting for an external approval",
+  );
+  assert.equal(finalState.lastBlockerKey, "ext-approval-1");
+  assert.equal(github.ensureBranchPublishedCount, 0);
+  assert.equal(github.ensurePullRequestCount, 0);
+});
+
+test("review BLOCKED_EXTERNAL ends BLOCKED without merge and does not resend to Implementer", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  client.reviewResponses = [
+    [
+      "REVIEW_VERDICT: BLOCKED_EXTERNAL",
+      "REVIEW_REASON: needs an external SSO fix",
+      "BLOCKER_KEY: sso-fix",
+    ].join("\n"),
+  ];
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  const implementationMessages = client.messages.filter((message) =>
+    message.includes("Actúa exclusivamente como Implementador."),
+  );
+
+  assert.equal(finalState.workflowState, "BLOCKED");
+  assert.equal(
+    finalState.blockReason,
+    "needs an external SSO fix",
+  );
+  assert.equal(finalState.lastBlockerKey, "sso-fix");
+  assert.equal(implementationMessages.length, 1);
+  assert.equal(github.mergeCount, 0);
+});
+
+test("repeated blocker key across consecutive review cycles ends BLOCKED before maxReviewCycles", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  client.reviewResponses = [
+    [
+      "REVIEW_VERDICT: CHANGES_REQUESTED",
+      "BLOCKER_KEY: flaky-test",
+      "The suite is still flaky.",
+    ].join("\n"),
+    [
+      "REVIEW_VERDICT: CHANGES_REQUESTED",
+      "BLOCKER_KEY: flaky-test",
+      "Still flaky after the fix.",
+    ].join("\n"),
+  ];
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task({
+      maxReviewCycles: 10,
+      repeatedBlockerThreshold: 2,
+    }),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "BLOCKED");
+  assert.equal(finalState.implementationCycle, 2);
+  assert.equal(finalState.lastBlockerKey, "flaky-test");
+  assert.equal(finalState.repeatedBlockerCount, 2);
+  assert.match(
+    finalState.blockReason ?? "",
+    /flaky-test.*repeated 2 consecutive review cycles/,
+  );
+  assert.equal(github.mergeCount, 0);
+});
+
+test("a different blocker key does not count as a repeat", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  client.reviewResponses = [
+    [
+      "REVIEW_VERDICT: CHANGES_REQUESTED",
+      "BLOCKER_KEY: issue-a",
+      "First issue.",
+    ].join("\n"),
+    [
+      "REVIEW_VERDICT: CHANGES_REQUESTED",
+      "BLOCKER_KEY: issue-b",
+      "Different issue.",
+    ].join("\n"),
+  ];
+  client.reviewVerdicts = ["APPROVED"];
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task({
+      maxReviewCycles: 10,
+      repeatedBlockerThreshold: 2,
+    }),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(finalState.implementationCycle, 3);
+});
+
+test("pause request between stages transitions to PAUSED without starting the next stage", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const originalGetFinalResponse =
+    client.getFinalResponse.bind(client);
+  let signaled = false;
+
+  client.getFinalResponse = async (conversationId) => {
+    const result = await originalGetFinalResponse(
+      conversationId,
+    );
+
+    if (!signaled) {
+      signaled = true;
+      const current = store.load("workflow-task");
+
+      if (current !== null) {
+        store.save({
+          ...current,
+          controlSignal: "PAUSE_REQUESTED",
+        });
+      }
+    }
+
+    return result;
+  };
+
+  const finalState = await runWorkflow({
+    client,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "PAUSED");
+  assert.equal(finalState.pausedFromState, "IMPLEMENTING");
+  assert.equal(finalState.controlSignal, "NONE");
+  assert.equal(client.createCount, 1);
+});
+
+test("resumes from PAUSED continuing the underlying workflow", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  store.save({
+    ...createInitialRunState("workflow-task", "PAUSED", null),
+    pausedFromState: "IMPLEMENTING",
+  });
+
+  const finalState = await runWorkflow({
+    client,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "DONE");
+  assert.equal(finalState.pullRequestNumber, 123);
+});
+
+test("cancel request prevents merge and finalizes as CANCELLED", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  store.save({
+    ...createInitialRunState("workflow-task", "MERGING", 123),
+    implementationCycle: 1,
+    reviewAttempt: 1,
+    reviewHeadSha: SHA_ONE,
+    approvedHeadSha: SHA_ONE,
+    lastReviewerVerdict: "APPROVED",
+    controlSignal: "CANCEL_REQUESTED",
+  });
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "CANCELLED");
+  assert.equal(finalState.cancelledFromState, "MERGING");
+  assert.equal(finalState.controlSignal, "NONE");
+  assert.equal(github.mergeCount, 0);
+  assert.equal(client.createCount, 0);
+});
+
+test("CANCELLED RunState is idempotent", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const github = new FakeGitHubClient();
+  store.save({
+    ...createInitialRunState("workflow-task", "CANCELLED", 101),
+    implementationCycle: 1,
+    cancelledFromState: "REVIEWING",
+  });
+
+  const finalState = await runWorkflow({
+    client,
+    github,
+    task: task(),
+    store,
+    agentProfileId: "profile",
+    pollIntervalMs: 0,
+  });
+
+  assert.equal(finalState.workflowState, "CANCELLED");
+  assert.equal(client.createCount, 0);
+  assert.equal(github.mergeCount, 0);
+});
+
+class ResourceLimitedClient {
+  detail: { code: string | null; detail: string | null } = {
+    code: "rate_limit",
+    detail:
+      "You have hit the usage limit for this billing period.",
+  };
+
+  async createConversation(options: {
+    conversationId?: string;
+  }): Promise<{ id: string; execution_status: string }> {
+    return {
+      id: options.conversationId!,
+      execution_status: "running",
+    };
+  }
+
+  async getConversation(
+    id: string,
+  ): Promise<{ id: string; execution_status: string }> {
+    return { id, execution_status: "running" };
+  }
+
+  async waitUntilFinished(
+    id: string,
+  ): Promise<{ id: string; execution_status: string }> {
+    throw new ConversationTerminalError(id, "error");
+  }
+
+  async getFinalResponse(): Promise<string> {
+    return "";
+  }
+
+  async getTerminalErrorDetail(): Promise<{
+    code: string | null;
+    detail: string | null;
+  }> {
+    return this.detail;
+  }
+}
+
+test("isResourceLimitEvidence recognizes known allowlisted evidence only", () => {
+  assert.equal(
+    isResourceLimitEvidence({
+      code: "rate_limit",
+      detail: null,
+    }),
+    true,
+  );
+  assert.equal(
+    isResourceLimitEvidence({
+      code: null,
+      detail: "Usage limit reached for this account.",
+    }),
+    true,
+  );
+  assert.equal(
+    isResourceLimitEvidence({
+      code: "model_not_found",
+      detail: "model not found",
+    }),
+    false,
+  );
+  assert.equal(isResourceLimitEvidence(null), false);
+});
+
+test("explicit resource-limit evidence classifies FAILED as RESOURCE_LIMIT and preserves the conversation", async () => {
+  const store = temporaryStore();
+  const client = new ResourceLimitedClient();
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      task: task(),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    ConversationTerminalError,
+  );
+
+  const saved = store.load("workflow-task");
+  assert.equal(saved?.workflowState, "FAILED");
+  assert.equal(saved?.failureKind, "RESOURCE_LIMIT");
+  assert.equal(typeof saved?.activeConversationId, "string");
+});
+
+test("unrecognized terminal error detail remains TERMINAL, not RESOURCE_LIMIT", async () => {
+  const store = temporaryStore();
+  const client = new ResourceLimitedClient();
+  client.detail = {
+    code: "model_not_found",
+    detail: "model not found",
+  };
+
+  await assert.rejects(
+    runWorkflow({
+      client,
+      task: task(),
+      store,
+      agentProfileId: "profile",
+      pollIntervalMs: 0,
+    }),
+    ConversationTerminalError,
+  );
+
+  const saved = store.load("workflow-task");
+  assert.equal(saved?.workflowState, "FAILED");
+  assert.equal(saved?.failureKind, "TERMINAL");
 });

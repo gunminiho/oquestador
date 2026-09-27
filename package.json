@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "tsx --test \"src/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "control-plane": "tsx src/control-plane/main.ts"
   },
   "keywords": [],
   "author": "",

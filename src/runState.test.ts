@@ -47,7 +47,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      4,
+      5,
     );
     assert.equal(
       loaded?.taskId,
@@ -104,6 +104,26 @@ test(
     assert.equal(
       loaded?.activeConversationId,
       null,
+    );
+    assert.equal(
+      loaded?.controlSignal,
+      "NONE",
+    );
+    assert.equal(
+      loaded?.pausedFromState,
+      null,
+    );
+    assert.equal(
+      loaded?.cancelledFromState,
+      null,
+    );
+    assert.equal(
+      loaded?.lastBlockerKey,
+      null,
+    );
+    assert.equal(
+      loaded?.repeatedBlockerCount,
+      0,
     );
   },
 );
@@ -260,7 +280,7 @@ test(
 );
 
 test(
-  "migrates version 1 RunState through version 4",
+  "migrates version 1 RunState through the current version",
   () => {
     const dir =
       mkdtempSync(
@@ -317,7 +337,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      4,
+      5,
     );
     assert.equal(
       loaded?.reviewAttempt,
@@ -406,7 +426,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      4,
+      5,
     );
     assert.equal(
       loaded?.preparationAttempt,
@@ -469,11 +489,106 @@ test(
 
     assert.equal(
       loaded?.version,
-      4,
+      5,
     );
     assert.equal(
       loaded?.noChangesBaseSha,
       null,
+    );
+  },
+);
+
+test(
+  "migrates version 4 RunState without resetting existing fields",
+  () => {
+    const dir =
+      mkdtempSync(
+        join(
+          tmpdir(),
+          "run-state-test-",
+        ),
+      );
+
+    const store =
+      new RunStateStore(dir);
+
+    const current = {
+      ...createInitialRunState(
+        "legacy-v4",
+        "BLOCKED",
+        null,
+      ),
+      preparationAttempt: 2,
+      blockReason:
+        "dirty tree",
+      failureKind:
+        "TERMINAL" as const,
+      failureMessage:
+        "boom",
+    };
+
+    const {
+      controlSignal:
+        _controlSignal,
+      pausedFromState:
+        _pausedFromState,
+      cancelledFromState:
+        _cancelledFromState,
+      lastBlockerKey:
+        _lastBlockerKey,
+      repeatedBlockerCount:
+        _repeatedBlockerCount,
+      ...legacy
+    } = current;
+
+    writeFileSync(
+      join(
+        dir,
+        "legacy-v4.json",
+      ),
+      JSON.stringify({
+        ...legacy,
+        version: 4,
+      }),
+      "utf8",
+    );
+
+    const loaded =
+      store.load(
+        "legacy-v4",
+      );
+
+    assert.equal(
+      loaded?.version,
+      5,
+    );
+    assert.equal(
+      loaded?.preparationAttempt,
+      2,
+    );
+    assert.equal(
+      loaded?.blockReason,
+      "dirty tree",
+    );
+    assert.equal(
+      loaded?.failureKind,
+      "TERMINAL",
+    );
+    assert.equal(
+      loaded?.failureMessage,
+      "boom",
+    );
+    assert.equal(
+      loaded?.controlSignal,
+      "NONE",
+    );
+    assert.equal(
+      loaded?.lastBlockerKey,
+      null,
+    );
+    assert.equal(
+      loaded?.repeatedBlockerCount,
+      0,
     );
   },
 );
@@ -513,7 +628,7 @@ test(
         store.load(
           "future-task",
         ),
-      /version must be 4/,
+      /version must be 5/,
     );
   },
 );

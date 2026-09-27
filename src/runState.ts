@@ -12,7 +12,7 @@ import {
   type WorkflowState,
 } from "./workflow";
 
-export const RUN_STATE_VERSION = 4;
+export const RUN_STATE_VERSION = 5;
 
 export type WorkflowStage =
   | "PREPARATION"
@@ -22,7 +22,13 @@ export type WorkflowStage =
 export type FailureKind =
   | "TRANSIENT"
   | "TERMINAL"
-  | "WORKFLOW";
+  | "WORKFLOW"
+  | "RESOURCE_LIMIT";
+
+export type ControlSignal =
+  | "NONE"
+  | "PAUSE_REQUESTED"
+  | "CANCEL_REQUESTED";
 
 export interface RunState {
   version: typeof RUN_STATE_VERSION;
@@ -46,6 +52,11 @@ export interface RunState {
   implementationConversationId: string | null;
   reviewConversationId: string | null;
   lastReviewerVerdict: ReviewerVerdict | null;
+  controlSignal: ControlSignal;
+  pausedFromState: WorkflowState | null;
+  cancelledFromState: WorkflowState | null;
+  lastBlockerKey: string | null;
+  repeatedBlockerCount: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -80,6 +91,11 @@ export function createInitialRunState(
     implementationConversationId: null,
     reviewConversationId: null,
     lastReviewerVerdict: null,
+    controlSignal: "NONE",
+    pausedFromState: null,
+    cancelledFromState: null,
+    lastBlockerKey: null,
+    repeatedBlockerCount: 0,
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -245,6 +261,26 @@ export function validateRunState(
     value.lastReviewerVerdict,
     `${source}.lastReviewerVerdict`,
   );
+  assertControlSignal(
+    value.controlSignal,
+    `${source}.controlSignal`,
+  );
+  assertNullableWorkflowState(
+    value.pausedFromState,
+    `${source}.pausedFromState`,
+  );
+  assertNullableWorkflowState(
+    value.cancelledFromState,
+    `${source}.cancelledFromState`,
+  );
+  assertNullableString(
+    value.lastBlockerKey,
+    `${source}.lastBlockerKey`,
+  );
+  assertNonNegativeInteger(
+    value.repeatedBlockerCount,
+    `${source}.repeatedBlockerCount`,
+  );
   assertString(value.createdAt, `${source}.createdAt`);
   assertString(value.updatedAt, `${source}.updatedAt`);
 
@@ -266,33 +302,51 @@ function migrateRunState(
   if (
     value.version !== 1 &&
     value.version !== 2 &&
-    value.version !== 3
+    value.version !== 3 &&
+    value.version !== 4
   ) {
     throw new Error(
       `${source}.version must be ${RUN_STATE_VERSION}.`,
     );
   }
 
-  const v2 =
-    value.version === 1
-      ? {
-          ...value,
-          version: 2,
-          reviewAttempt: 0,
-          reviewHeadSha: null,
-          approvedHeadSha: null,
-          mergeCommitSha: null,
-        }
-      : value;
+  let migrated: Record<string, unknown> = value;
+
+  if (migrated.version === 1) {
+    migrated = {
+      ...migrated,
+      version: 2,
+      reviewAttempt: 0,
+      reviewHeadSha: null,
+      approvedHeadSha: null,
+      mergeCommitSha: null,
+    };
+  }
+
+  if (
+    migrated.version === 2 ||
+    migrated.version === 3
+  ) {
+    migrated = {
+      ...migrated,
+      version: 4,
+      noChangesBaseSha: null,
+      preparationAttempt:
+        migrated.preparationAttempt ?? 0,
+      blockReason: null,
+      failureKind: null,
+      failureMessage: null,
+    };
+  }
 
   return {
-    ...v2,
+    ...migrated,
     version: RUN_STATE_VERSION,
-    noChangesBaseSha: null,
-    preparationAttempt: 0,
-    blockReason: null,
-    failureKind: null,
-    failureMessage: null,
+    controlSignal: "NONE",
+    pausedFromState: null,
+    cancelledFromState: null,
+    lastBlockerKey: null,
+    repeatedBlockerCount: 0,
   };
 }
 
@@ -393,14 +447,47 @@ function assertWorkflowState(
   value: unknown,
   field: string,
 ): void {
+  if (!isValidWorkflowState(value)) {
+    throw new Error(`${field} is invalid.`);
+  }
+}
+
+function assertNullableWorkflowState(
+  value: unknown,
+  field: string,
+): void {
   if (
-    value !== "PREPARING" &&
-    value !== "BLOCKED" &&
-    value !== "IMPLEMENTING" &&
-    value !== "REVIEWING" &&
-    value !== "MERGING" &&
-    value !== "DONE" &&
-    value !== "FAILED"
+    value !== null &&
+    !isValidWorkflowState(value)
+  ) {
+    throw new Error(`${field} must be a WorkflowState or null.`);
+  }
+}
+
+function isValidWorkflowState(
+  value: unknown,
+): value is WorkflowState {
+  return (
+    value === "PREPARING" ||
+    value === "BLOCKED" ||
+    value === "IMPLEMENTING" ||
+    value === "REVIEWING" ||
+    value === "MERGING" ||
+    value === "PAUSED" ||
+    value === "CANCELLED" ||
+    value === "DONE" ||
+    value === "FAILED"
+  );
+}
+
+function assertControlSignal(
+  value: unknown,
+  field: string,
+): void {
+  if (
+    value !== "NONE" &&
+    value !== "PAUSE_REQUESTED" &&
+    value !== "CANCEL_REQUESTED"
   ) {
     throw new Error(`${field} is invalid.`);
   }
@@ -444,7 +531,8 @@ function assertNullableVerdict(
   if (
     value !== null &&
     value !== "APPROVED" &&
-    value !== "CHANGES_REQUESTED"
+    value !== "CHANGES_REQUESTED" &&
+    value !== "BLOCKED_EXTERNAL"
   ) {
     throw new Error(`${field} is invalid.`);
   }
@@ -458,7 +546,8 @@ function assertNullableFailureKind(
     value !== null &&
     value !== "TRANSIENT" &&
     value !== "TERMINAL" &&
-    value !== "WORKFLOW"
+    value !== "WORKFLOW" &&
+    value !== "RESOURCE_LIMIT"
   ) {
     throw new Error(`${field} is invalid.`);
   }

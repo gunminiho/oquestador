@@ -13,6 +13,7 @@ export interface WorkflowTask {
   objective: string;
   acceptanceCriteria: string[];
   maxReviewCycles?: number;
+  repeatedBlockerThreshold?: number;
 }
 
 export function validateWorkflowTask(
@@ -93,4 +94,18 @@ export function validateWorkflowTask(
       "WorkflowTask.maxReviewCycles must be a positive integer.",
     );
   }
+
+  if (
+    task.repeatedBlockerThreshold !== undefined &&
+    (
+      !Number.isInteger(task.repeatedBlockerThreshold) ||
+      task.repeatedBlockerThreshold <= 0
+    )
+  ) {
+    throw new Error(
+      "WorkflowTask.repeatedBlockerThreshold must be a positive integer.",
+    );
+  }
 }
+
+export const DEFAULT_REPEATED_BLOCKER_THRESHOLD = 3;
