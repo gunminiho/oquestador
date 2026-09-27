@@ -49,7 +49,7 @@ Provider probes:
 
 ## Fix
 
-`OpenHandsClient` now resolves `/api/agent-profiles` before creating a conversation, matches the selected `agent_profile_id`, and detects Claude ACP profiles by `acp_server="claude-code"` or an `acp_command` containing `claude-agent-acp`. For those profiles only, it automatically adds this Agent Canvas lookup to the create request:
+`OpenHandsClient` now adds the Claude OAuth Agent Canvas lookup directly to the create request, without reading `/api/agent-profiles` or any other backend preflight endpoint:
 
 ```json
 {
@@ -64,7 +64,7 @@ Provider probes:
 
 Agent Canvas resolves that lookup server-side from its secret store. The orchestrator never reads, logs, copies, or persists the secret value.
 
-This connects the secret to the real orchestrator flow without requiring a new externally configured `OH_CONVERSATION_SECRET_REFS` variable. That variable remains available for explicit extra lookups, but the Claude OAuth lookup no longer depends on it. Non-Claude profiles do not receive the Claude OAuth lookup.
+This connects the secret to the real orchestrator flow without requiring a new externally configured `OH_CONVERSATION_SECRET_REFS` variable and without depending on `/api/agent-profiles`, which is not available to this workspace's session key. `OH_CONVERSATION_SECRET_REFS` remains available for explicit extra lookups, and callers that intentionally run non-Claude profiles can disable the default Claude lookup with `autoClaudeOauthSecretRef: false`.
 
 ## Hypotheses
 
@@ -83,14 +83,15 @@ This connects the secret to the real orchestrator flow without requiring a new e
 - Secret store presence probe: `CLAUDE_CODE_OAUTH_TOKEN=present`, `ANTHROPIC_API_KEY=absent`, values not printed.
 - ACP child env probe: `CLAUDE_CODE_OAUTH_TOKEN=true`, `ANTHROPIC_API_KEY=false`.
 - Direct OAuth smoke: Claude Code returned `ok`.
-- Request-boundary regression test: a mocked `/api/agent-profiles` response for a Claude ACP profile causes `createConversation()` to send `secrets.CLAUDE_CODE_OAUTH_TOKEN={kind:"lookup",url:"/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN"}` without passing `conversationSecretRefs` manually.
-- Non-Claude guard test: a mocked non-Claude profile creates the conversation without a `secrets` field.
+- Request-boundary regression test: `createConversation()` sends `secrets.CLAUDE_CODE_OAUTH_TOKEN={kind:"lookup",url:"/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN"}` without passing `conversationSecretRefs` manually and without calling `/api/agent-profiles`.
+- Opt-out guard test: `autoClaudeOauthSecretRef:false` creates the conversation without a `secrets` field and still does not call `/api/agent-profiles`.
 - Local checks after the fix: `npm test` and `npm run typecheck` passed.
-- Local backend access check after the fix: ports 8000 and 8001 were listening, but `/api/agent-profiles` returned HTTP 403 with the available session key, so no backend smoke conversation could be created from this workspace.
+- Local backend access check after the reviewer feedback: `/api/conversations/search`, `/api/settings`, and `/api/agent-profiles` each returned HTTP 403 with the available session key.
+- Corrected Agent Canvas smoke attempt: direct `POST /api/conversations` with the fixed sanitized lookup request returned HTTP 405 in this workspace before a conversation was created.
 - Docker availability: Docker CLI exists, but daemon socket was unavailable, so no Docker image build or main-container inspection was performed.
 
 ## Smoke Status
 
 Direct Claude Code OAuth smoke passed and did not show `ACPAuthRequired`.
 
-A full Agent Canvas conversation smoke through the backend remains UNPROVEN in this workspace because the available API key returned 403 from the local backend. Docker was also unavailable, so the main runtime container could not be inspected or restarted from here. The fixed request boundary is covered by the regression tests above.
+A full Agent Canvas conversation smoke through the backend remains UNPROVEN in this workspace because the available API key returned 403 from read endpoints and the corrected create request returned 405 before conversation creation. Docker was also unavailable, so the main runtime container could not be inspected or restarted from here. The fixed request boundary is covered by the regression tests above.

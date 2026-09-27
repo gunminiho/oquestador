@@ -400,6 +400,8 @@ test(
         "http://test",
         "key",
         {
+          autoClaudeOauthSecretRef:
+            false,
           conversationSecretRefs: [
             "CLAUDE_CODE_OAUTH_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
@@ -450,7 +452,7 @@ test(
 );
 
 test(
-  "createConversation automatically includes Claude OAuth lookup for Claude ACP profiles",
+  "createConversation includes Claude OAuth lookup without profile preflight",
   async () => {
     const paths: string[] = [];
     let capturedBody:
@@ -472,27 +474,6 @@ test(
                   String(input),
                 ).pathname;
               paths.push(path);
-
-              if (
-                path ===
-                "/api/agent-profiles"
-              ) {
-                return jsonResponse({
-                  profiles: [
-                    {
-                      id:
-                        "claude-profile",
-                      agent_settings: {
-                        acp_server:
-                          "claude-code",
-                        acp_command: [
-                          "claude-agent-acp",
-                        ],
-                      },
-                    },
-                  ],
-                });
-              }
 
               capturedBody =
                 JSON.parse(
@@ -524,7 +505,6 @@ test(
     assert.deepEqual(
       paths,
       [
-        "/api/agent-profiles",
         "/api/conversations",
       ],
     );
@@ -543,8 +523,9 @@ test(
 );
 
 test(
-  "createConversation does not expose Claude OAuth lookup for non-Claude profiles",
+  "createConversation can disable the default Claude OAuth lookup",
   async () => {
+    const paths: string[] = [];
     let capturedBody:
       | Record<string, unknown>
       | undefined;
@@ -554,6 +535,8 @@ test(
         "http://test",
         "key",
         {
+          autoClaudeOauthSecretRef:
+            false,
           fetchFn:
             (async (
               input,
@@ -563,24 +546,7 @@ test(
                 new URL(
                   String(input),
                 ).pathname;
-
-              if (
-                path ===
-                "/api/agent-profiles"
-              ) {
-                return jsonResponse({
-                  profiles: [
-                    {
-                      id:
-                        "reviewer-profile",
-                      agent_settings: {
-                        agent_kind:
-                          "CodeActAgent",
-                      },
-                    },
-                  ],
-                });
-              }
+              paths.push(path);
 
               capturedBody =
                 JSON.parse(
@@ -604,10 +570,17 @@ test(
         workspace:
           "/projects/task",
         agentProfileId:
-          "reviewer-profile",
+          "profile",
         message:
           "hello",
       });
+
+    assert.deepEqual(
+      paths,
+      [
+        "/api/conversations",
+      ],
+    );
 
     assert.equal(
       "secrets" in
