@@ -22,6 +22,7 @@ export interface OpenHandsClientOptions {
   baseBackoffMs?: number;
   maxBackoffMs?: number;
   conversationSecretRefs?: string[];
+  autoClaudeOauthSecretRef?: boolean;
   fetchFn?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -71,16 +72,23 @@ const TRANSIENT_HTTP_STATUSES = new Set([
   504,
 ]);
 
+const CLAUDE_CODE_OAUTH_TOKEN =
+  "CLAUDE_CODE_OAUTH_TOKEN";
+
 export class OpenHandsClient {
   private readonly maxTransientRetries: number;
   private readonly maxTransient404s: number;
   private readonly baseBackoffMs: number;
   private readonly maxBackoffMs: number;
   private readonly conversationSecretRefs: string[];
+  private readonly autoClaudeOauthSecretRef: boolean;
   private readonly fetchFn: typeof fetch;
   private readonly sleep: (
     ms: number,
   ) => Promise<void>;
+  private agentProfiles:
+    | Promise<unknown[]>
+    | undefined;
 
   constructor(
     private readonly baseUrl: string,
@@ -107,6 +115,9 @@ export class OpenHandsClient {
               .OH_CONVERSATION_SECRET_REFS,
           ),
       );
+
+    this.autoClaudeOauthSecretRef =
+      options.autoClaudeOauthSecretRef ?? true;
 
     this.fetchFn =
       options.fetchFn ?? fetch;
@@ -145,13 +156,19 @@ export class OpenHandsClient {
         autotitle: false,
       };
 
+      const conversationSecretRefs =
+        await this
+          .conversationSecretRefsForProfile(
+            options.agentProfileId,
+          );
+
       if (
-        this.conversationSecretRefs.length >
+        conversationSecretRefs.length >
         0
       ) {
         body.secrets =
           Object.fromEntries(
-            this.conversationSecretRefs.map(
+            conversationSecretRefs.map(
               (name) => [
                 name,
                 {
@@ -411,6 +428,64 @@ export class OpenHandsClient {
 
     await this.sleep(delay);
   }
+
+  private async conversationSecretRefsForProfile(
+    agentProfileId: string,
+  ): Promise<string[]> {
+    const refs = [
+      ...this.conversationSecretRefs,
+    ];
+
+    if (
+      this.autoClaudeOauthSecretRef &&
+      !refs.includes(
+        CLAUDE_CODE_OAUTH_TOKEN,
+      ) &&
+      (await this
+        .isClaudeAcpAgentProfile(
+          agentProfileId,
+        ))
+    ) {
+      refs.push(
+        CLAUDE_CODE_OAUTH_TOKEN,
+      );
+    }
+
+    return refs;
+  }
+
+  private async isClaudeAcpAgentProfile(
+    agentProfileId: string,
+  ): Promise<boolean> {
+    const profiles =
+      await this.getAgentProfiles();
+
+    const profile =
+      profiles.find((candidate) =>
+        profileMatchesId(
+          candidate,
+          agentProfileId,
+        ),
+      );
+
+    return (
+      profile !== undefined &&
+      objectContainsClaudeAcpConfig(
+        profile,
+      )
+    );
+  }
+
+  private async getAgentProfiles(): Promise<
+    unknown[]
+  > {
+    this.agentProfiles ??=
+      this.request<unknown>(
+        "/api/agent-profiles",
+      ).then(extractAgentProfiles);
+
+    return this.agentProfiles;
+  }
 }
 
 function parseConversationSecretRefs(
@@ -452,6 +527,136 @@ function normalizeConversationSecretRefs(
       seen.add(item);
       return true;
     });
+}
+
+function extractAgentProfiles(
+  payload: unknown,
+): unknown[] {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (
+    payload !== null &&
+    typeof payload === "object"
+  ) {
+    const record =
+      payload as Record<
+        string,
+        unknown
+      >;
+
+    for (const key of [
+      "profiles",
+      "agent_profiles",
+      "items",
+      "data",
+    ]) {
+      const value =
+        record[key];
+
+      if (Array.isArray(value)) {
+        return value;
+      }
+    }
+  }
+
+  return [];
+}
+
+function profileMatchesId(
+  profile: unknown,
+  agentProfileId: string,
+): boolean {
+  if (
+    profile === null ||
+    typeof profile !== "object"
+  ) {
+    return false;
+  }
+
+  const record =
+    profile as Record<
+      string,
+      unknown
+    >;
+
+  return (
+    record.id === agentProfileId ||
+    record.profile_id ===
+      agentProfileId ||
+    record.name === agentProfileId
+  );
+}
+
+function objectContainsClaudeAcpConfig(
+  value: unknown,
+): boolean {
+  const stack: unknown[] = [
+    value,
+  ];
+
+  while (stack.length > 0) {
+    const current =
+      stack.pop();
+
+    if (
+      current === null ||
+      typeof current !== "object"
+    ) {
+      continue;
+    }
+
+    if (Array.isArray(current)) {
+      stack.push(...current);
+      continue;
+    }
+
+    const record =
+      current as Record<
+        string,
+        unknown
+      >;
+
+    if (
+      record.acp_server ===
+      "claude-code"
+    ) {
+      return true;
+    }
+
+    const command =
+      record.acp_command;
+
+    if (
+      typeof command === "string" &&
+      command.includes(
+        "claude-agent-acp",
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      Array.isArray(command) &&
+      command.some(
+        (item) =>
+          typeof item ===
+            "string" &&
+          item.includes(
+            "claude-agent-acp",
+          ),
+      )
+    ) {
+      return true;
+    }
+
+    stack.push(
+      ...Object.values(record),
+    );
+  }
+
+  return false;
 }
 
 function isTransientNetworkError(

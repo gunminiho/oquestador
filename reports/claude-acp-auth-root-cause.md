@@ -49,7 +49,7 @@ Provider probes:
 
 ## Fix
 
-`OpenHandsClient` now supports explicit conversation secret references. When `OH_CONVERSATION_SECRET_REFS=CLAUDE_CODE_OAUTH_TOKEN` is set, create requests include:
+`OpenHandsClient` now resolves `/api/agent-profiles` before creating a conversation, matches the selected `agent_profile_id`, and detects Claude ACP profiles by `acp_server="claude-code"` or an `acp_command` containing `claude-agent-acp`. For those profiles only, it automatically adds this Agent Canvas lookup to the create request:
 
 ```json
 {
@@ -64,7 +64,7 @@ Provider probes:
 
 Agent Canvas resolves that lookup server-side from its secret store. The orchestrator never reads, logs, copies, or persists the secret value.
 
-This keeps the correction scoped to the repository boundary that was missing the credential while avoiding a global default that would pass a Claude OAuth secret to non-Claude profiles.
+This connects the secret to the real orchestrator flow without requiring a new externally configured `OH_CONVERSATION_SECRET_REFS` variable. That variable remains available for explicit extra lookups, but the Claude OAuth lookup no longer depends on it. Non-Claude profiles do not receive the Claude OAuth lookup.
 
 ## Hypotheses
 
@@ -83,10 +83,14 @@ This keeps the correction scoped to the repository boundary that was missing the
 - Secret store presence probe: `CLAUDE_CODE_OAUTH_TOKEN=present`, `ANTHROPIC_API_KEY=absent`, values not printed.
 - ACP child env probe: `CLAUDE_CODE_OAUTH_TOKEN=true`, `ANTHROPIC_API_KEY=false`.
 - Direct OAuth smoke: Claude Code returned `ok`.
+- Request-boundary regression test: a mocked `/api/agent-profiles` response for a Claude ACP profile causes `createConversation()` to send `secrets.CLAUDE_CODE_OAUTH_TOKEN={kind:"lookup",url:"/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN"}` without passing `conversationSecretRefs` manually.
+- Non-Claude guard test: a mocked non-Claude profile creates the conversation without a `secrets` field.
+- Local checks after the fix: `npm test` and `npm run typecheck` passed.
+- Local backend access check after the fix: ports 8000 and 8001 were listening, but `/api/agent-profiles` returned HTTP 403 with the available session key, so no backend smoke conversation could be created from this workspace.
 - Docker availability: Docker CLI exists, but daemon socket was unavailable, so no Docker image build or main-container inspection was performed.
 
 ## Smoke Status
 
 Direct Claude Code OAuth smoke passed and did not show `ACPAuthRequired`.
 
-A full Agent Canvas conversation smoke through the backend could not be run in this workspace because no local backend port was listening and the available API key attempt returned 403. Docker was also unavailable, so the main runtime container could not be inspected or restarted from here.
+A full Agent Canvas conversation smoke through the backend remains UNPROVEN in this workspace because the available API key returned 403 from the local backend. Docker was also unavailable, so the main runtime container could not be inspected or restarted from here. The fixed request boundary is covered by the regression tests above.

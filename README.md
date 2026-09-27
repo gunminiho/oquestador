@@ -112,7 +112,7 @@ Useful environment variables include:
 - `OH_BASE_URL`
 - `OH_SESSION_API_KEY`
 - `OH_AGENT_PROFILE_ID`
-- `OH_CONVERSATION_SECRET_REFS` (comma-separated secret names to expose to each conversation through Agent Canvas lookup refs, for example `CLAUDE_CODE_OAUTH_TOKEN` for Claude ACP)
+- `OH_CONVERSATION_SECRET_REFS` (optional comma-separated secret names to expose to each conversation through Agent Canvas lookup refs; Claude ACP profiles automatically receive a `CLAUDE_CODE_OAUTH_TOKEN` lookup)
 - `OH_AGENT_CONTAINER` (defaults to `openhands-canvas`)
 - `OH_WORKTREE_ROOT` (defaults to `/projects/.orchestrator-worktrees`)
 - `WORKFLOW_TASK_FILE`

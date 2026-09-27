@@ -321,7 +321,7 @@ test(
 test(
   "deterministic conversation creation recovers from a 409 without a racy follow-up lookup",
   async () => {
-    let calls = 0;
+    let postCalls = 0;
 
     const client =
       new OpenHandsClient(
@@ -333,12 +333,12 @@ test(
               _input,
               init,
             ) => {
-              calls += 1;
-
               if (
                 init?.method ===
                 "POST"
               ) {
+                postCalls += 1;
+
                 return new Response(
                   "already exists",
                   {
@@ -382,7 +382,7 @@ test(
     );
 
     assert.equal(
-      calls,
+      postCalls,
       1,
     );
   },
@@ -445,6 +445,174 @@ test(
             "/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN",
         },
       },
+    );
+  },
+);
+
+test(
+  "createConversation automatically includes Claude OAuth lookup for Claude ACP profiles",
+  async () => {
+    const paths: string[] = [];
+    let capturedBody:
+      | Record<string, unknown>
+      | undefined;
+
+    const client =
+      new OpenHandsClient(
+        "http://test",
+        "key",
+        {
+          fetchFn:
+            (async (
+              input,
+              init,
+            ) => {
+              const path =
+                new URL(
+                  String(input),
+                ).pathname;
+              paths.push(path);
+
+              if (
+                path ===
+                "/api/agent-profiles"
+              ) {
+                return jsonResponse({
+                  profiles: [
+                    {
+                      id:
+                        "claude-profile",
+                      agent_settings: {
+                        acp_server:
+                          "claude-code",
+                        acp_command: [
+                          "claude-agent-acp",
+                        ],
+                      },
+                    },
+                  ],
+                });
+              }
+
+              capturedBody =
+                JSON.parse(
+                  String(init?.body),
+                ) as Record<
+                  string,
+                  unknown
+                >;
+
+              return jsonResponse({
+                id: "c",
+                execution_status:
+                  "running",
+              });
+            }) as typeof fetch,
+        },
+      );
+
+    await client
+      .createConversation({
+        workspace:
+          "/projects/task",
+        agentProfileId:
+          "claude-profile",
+        message:
+          "hello",
+      });
+
+    assert.deepEqual(
+      paths,
+      [
+        "/api/agent-profiles",
+        "/api/conversations",
+      ],
+    );
+
+    assert.deepEqual(
+      capturedBody?.secrets,
+      {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          kind: "lookup",
+          url:
+            "/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN",
+        },
+      },
+    );
+  },
+);
+
+test(
+  "createConversation does not expose Claude OAuth lookup for non-Claude profiles",
+  async () => {
+    let capturedBody:
+      | Record<string, unknown>
+      | undefined;
+
+    const client =
+      new OpenHandsClient(
+        "http://test",
+        "key",
+        {
+          fetchFn:
+            (async (
+              input,
+              init,
+            ) => {
+              const path =
+                new URL(
+                  String(input),
+                ).pathname;
+
+              if (
+                path ===
+                "/api/agent-profiles"
+              ) {
+                return jsonResponse({
+                  profiles: [
+                    {
+                      id:
+                        "reviewer-profile",
+                      agent_settings: {
+                        agent_kind:
+                          "CodeActAgent",
+                      },
+                    },
+                  ],
+                });
+              }
+
+              capturedBody =
+                JSON.parse(
+                  String(init?.body),
+                ) as Record<
+                  string,
+                  unknown
+                >;
+
+              return jsonResponse({
+                id: "c",
+                execution_status:
+                  "running",
+              });
+            }) as typeof fetch,
+        },
+      );
+
+    await client
+      .createConversation({
+        workspace:
+          "/projects/task",
+        agentProfileId:
+          "reviewer-profile",
+        message:
+          "hello",
+      });
+
+    assert.equal(
+      "secrets" in
+        (capturedBody ?? {}),
+      false,
     );
   },
 );
