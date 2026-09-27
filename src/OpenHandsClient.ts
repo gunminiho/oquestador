@@ -472,6 +472,7 @@ function getClaudeAgentProfileIds(
             process.env
               .OH_CLAUDE_AGENT_PROFILE_IDS,
           )),
+        process.env.OH_AGENT_PROFILE_ID,
         ...readLocalClaudeAgentProfileIds(),
       ],
     ),
@@ -487,12 +488,16 @@ function parseList(
 }
 
 function normalizeList(
-  values: string[],
+  values: Array<string | undefined>,
 ): string[] {
   const seen =
     new Set<string>();
 
   return values
+    .filter(
+      (item): item is string =>
+        typeof item === "string",
+    )
     .map((item) => item.trim())
     .filter((item) => item.length > 0)
     .filter((item) => {

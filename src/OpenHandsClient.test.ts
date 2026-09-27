@@ -681,6 +681,139 @@ test(
 );
 
 test(
+  "createConversation seeds Claude OAuth for the effective OH_AGENT_PROFILE_ID without a local profile file",
+  async () => {
+    const previousHome =
+      process.env.HOME;
+    const previousAgentProfileId =
+      process.env.OH_AGENT_PROFILE_ID;
+    const previousProfileIds =
+      process.env
+        .OH_CLAUDE_AGENT_PROFILE_IDS;
+    const previousSecretRefs =
+      process.env
+        .OH_CONVERSATION_SECRET_REFS;
+
+    const home =
+      mkdtempSync(
+        join(
+          tmpdir(),
+          "openhands-client-empty-home-",
+        ),
+      );
+    const claudeProfileId =
+      "6dfd17c3-07dc-41f1-b4aa-8c02fcafb5ec";
+
+    let capturedBody:
+      | Record<string, unknown>
+      | undefined;
+
+    try {
+      process.env.HOME = home;
+      process.env.OH_AGENT_PROFILE_ID =
+        claudeProfileId;
+      delete process.env
+        .OH_CLAUDE_AGENT_PROFILE_IDS;
+      delete process.env
+        .OH_CONVERSATION_SECRET_REFS;
+
+      const client =
+        new OpenHandsClient(
+          "http://test",
+          "key",
+          {
+            fetchFn:
+              (async (
+                _input,
+                init,
+              ) => {
+                capturedBody =
+                  JSON.parse(
+                    String(init?.body),
+                  ) as Record<
+                    string,
+                    unknown
+                  >;
+
+                return jsonResponse({
+                  id: "c",
+                  execution_status:
+                    "running",
+                });
+              }) as typeof fetch,
+          },
+        );
+
+      await client
+        .createConversation({
+          workspace:
+            "/projects/task",
+          agentProfileId:
+            claudeProfileId,
+          message:
+            "hello",
+        });
+    } finally {
+      if (
+        previousHome === undefined
+      ) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME =
+          previousHome;
+      }
+
+      if (
+        previousAgentProfileId ===
+        undefined
+      ) {
+        delete process.env
+          .OH_AGENT_PROFILE_ID;
+      } else {
+        process.env
+          .OH_AGENT_PROFILE_ID =
+          previousAgentProfileId;
+      }
+
+      if (
+        previousProfileIds ===
+        undefined
+      ) {
+        delete process.env
+          .OH_CLAUDE_AGENT_PROFILE_IDS;
+      } else {
+        process.env
+          .OH_CLAUDE_AGENT_PROFILE_IDS =
+          previousProfileIds;
+      }
+
+      if (
+        previousSecretRefs ===
+        undefined
+      ) {
+        delete process.env
+          .OH_CONVERSATION_SECRET_REFS;
+      } else {
+        process.env
+          .OH_CONVERSATION_SECRET_REFS =
+          previousSecretRefs;
+      }
+    }
+
+    assert.deepEqual(
+      capturedBody?.secrets,
+      {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          kind: "LookupSecret",
+          url:
+            "/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN",
+        },
+      },
+    );
+  },
+);
+
+test(
   "createConversation does not include default Claude OAuth lookup for other profiles",
   async () => {
     const paths: string[] = [];
