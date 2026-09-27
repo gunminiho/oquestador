@@ -6,7 +6,7 @@ Date: 2026-09-27
 
 PR: `#8`
 
-Reviewed starting SHA: `863272c1059869f5c8cc159a5a5b32e0b8b211bd`
+Reviewed starting SHA for this correction pass: `25bbc0d4d6a93f56fbf07293e91a4df71ec8d96d`
 
 ## Cause Root
 
@@ -16,7 +16,7 @@ In `openhands-sdk==1.49.4`, Claude ACP builds the child environment from `defaul
 
 This is separate from the previous model+effort investigation. The failed conversation already reached `@agentclientprotocol/claude-agent-acp` 0.63.0, showed `acp_model="opus[1m]"`, `acp_current_model_id="opus[1m]"`, and ended before any useful model response with `prompt_tokens=0` and `completion_tokens=0`.
 
-The current credential state is a separate external blocker. A follow-up SDK+ACP smoke after the fix proved the fixed path delivers a `CLAUDE_CODE_OAUTH_TOKEN` into the Claude ACP route, but Claude Code then rejected the value resolved through that path with `401 Invalid bearer token`. An earlier direct Claude Code OAuth probe had succeeded with an in-memory token available during that investigation; that result does not prove the later `LookupSecret`-resolved value remained valid or identical. In this follow-up workspace the Claude credentials are absent from `process.env`, and the local Agent Canvas backend returns HTTP 403 for settings/profile APIs with the available session key, so the current plaintext OAuth/API-key values cannot be re-read or compared safely here.
+The current credential state is a separate external blocker. A follow-up SDK+ACP smoke after the repository fix proved the fixed path delivers a `CLAUDE_CODE_OAUTH_TOKEN` into the Claude ACP route, but Claude Code then rejected the value resolved through that path with `401 Invalid bearer token`. An earlier direct Claude Code OAuth probe had succeeded with an in-memory token available during that investigation; that result does not prove the later `LookupSecret`-resolved value remained valid or identical. In this follow-up workspace the Claude credentials are absent from `process.env`, and the local Agent Canvas backend returns HTTP 403 for settings/profile APIs with the available session key, so the current plaintext OAuth/API-key values cannot be re-read or compared safely here.
 
 ## Evidence
 
@@ -49,9 +49,9 @@ This proves that when `CLAUDE_CODE_OAUTH_TOKEN` is present in the conversation r
 Credential/provenance evidence:
 
 - The Claude profile file exists at `~/.openhands/agent-profiles/claude.json`, has a UUID `id`, name `claude`, `agent_kind="acp"`, and `secret_refs=null`; sanitized inspection did not print credentials.
-- The orchestrator passes `OH_AGENT_PROFILE_ID` directly into `runWorkflow()` and `OpenHandsClient.createConversation()`. The reviewed fix now treats that effective profile id as a Claude profile id for the repository's default Claude ACP workflow, so the request is deterministic even when the local `claude.json` file is absent or not shared with the backend process.
+- The orchestrator passes `OH_AGENT_PROFILE_ID` directly into `runWorkflow()` and `OpenHandsClient.createConversation()`, but that variable only names the active profile and does not prove the profile is Claude. The corrected fix no longer treats `OH_AGENT_PROFILE_ID` alone as a Claude signal.
 - A new regression test reproduces that production path: `OpenHandsClient` is constructed without options, `$HOME/.openhands/agent-profiles/claude.json` contains the Claude profile id, and `createConversation()` sends `secrets.CLAUDE_CODE_OAUTH_TOKEN={kind:"LookupSecret",url:"/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN"}` for that profile.
-- A second regression test covers the reviewer-requested boundary: only `OH_AGENT_PROFILE_ID` is configured, `OH_CLAUDE_AGENT_PROFILE_IDS` and `OH_CONVERSATION_SECRET_REFS` are unset, `$HOME` has no local OpenHands profile file, and `createConversation()` still sends the `CLAUDE_CODE_OAUTH_TOKEN` `LookupSecret`.
+- A second regression test covers the reviewer-requested boundary: only `OH_AGENT_PROFILE_ID` is configured, `OH_CLAUDE_AGENT_PROFILE_IDS` and `OH_CONVERSATION_SECRET_REFS` are unset, `$HOME` has no local OpenHands profile file, and `createConversation()` does not send `CLAUDE_CODE_OAUTH_TOKEN`.
 - `StartConversationRequest` from installed `openhands-sdk==1.49.4` validates the generated request shape when `agent_profile_id` is a UUID, and deserializes the secret source as `openhands.sdk.secret.secrets.LookupSecret`.
 - Local Agent Canvas API access using the available session key returned HTTP 403 for `/api/settings` in this follow-up workspace, so the backend could not be used here to inspect encrypted settings or create a full smoke conversation.
 
@@ -76,7 +76,7 @@ Provider probes:
 }
 ```
 
-The default Claude OAuth lookup is added when the requested `agentProfileId` matches the effective `OH_AGENT_PROFILE_ID`, a configured Claude profile id/name from `OH_CLAUDE_AGENT_PROFILE_IDS`, or the local `~/.openhands/agent-profiles/claude.json`. This matches the current orchestrator, which constructs `OpenHandsClient` with no special options and passes `OH_AGENT_PROFILE_ID` separately to `runWorkflow`.
+The default Claude OAuth lookup is added only when the requested `agentProfileId` matches a configured Claude profile id/name from `OH_CLAUDE_AGENT_PROFILE_IDS` or the local `~/.openhands/agent-profiles/claude.json`. `OH_AGENT_PROFILE_ID` is intentionally not used as an implicit Claude signal because it can name any active profile. Deployments whose Claude profile file is not available to this client process must set `OH_CLAUDE_AGENT_PROFILE_IDS` explicitly.
 
 `OH_CONVERSATION_SECRET_REFS` remains available for explicit extra lookup refs. `autoClaudeOauthSecretRef:false` is available for tests or deployments that intentionally do not want the default Claude OAuth lookup.
 
@@ -87,6 +87,7 @@ No token, API key, Authorization header, cookie, or full auth file was printed, 
 Demonstrated:
 
 - Original repository boundary was missing `StartConversationRequest.secrets` for the Claude conversation.
+- Treating every `OH_AGENT_PROFILE_ID` value as Claude would expose `CLAUDE_CODE_OAUTH_TOKEN` to non-Claude profiles; this has been removed.
 - OpenHands SDK 1.49.4 strips API key/base URL when OAuth is present, so OAuth has precedence over API-key fallback.
 - When OAuth is seeded into `state.secret_registry`, it reaches `claude-agent-acp`.
 - The later OAuth credential resolved through the SDK+ACP smoke was not accepted by Claude Code through the ACP route; the observable provider error was `401 Invalid bearer token`.
@@ -115,7 +116,7 @@ UNPROVEN:
 - Secret store presence probe from the original investigation: `CLAUDE_CODE_OAUTH_TOKEN=present`, `ANTHROPIC_API_KEY=absent` in the readable local store; values not printed.
 - ACP child env probe from the original investigation: `CLAUDE_CODE_OAUTH_TOKEN=true`, `ANTHROPIC_API_KEY=false`, `ANTHROPIC_BASE_URL=false`, `CLAUDECODE=false`.
 - Direct OAuth smoke from the original investigation: Claude Code returned sanitized tail `ok`.
-- Local backend access after reviewer feedback: `/api/settings` returned HTTP 403 with the available session key.
+- Local backend access after reviewer feedback: `/api/settings`, `/api/agent-profiles`, and `/api/conversations/search` returned HTTP 403 with the available session key.
 - OpenHands SDK+Claude ACP smoke after reviewer feedback: fixed `LookupSecret` path delivered the OAuth credential to `claude-agent-acp` 0.63.0; provider returned sanitized `401 Invalid bearer token`; no assistant response was produced.
 - Docker availability: Docker CLI exists, but daemon/socket was unavailable, so no Docker image build or main-container inspection was performed.
 - Regression checks after this follow-up: `npm test` and `npm run typecheck` pass.

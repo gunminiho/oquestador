@@ -681,7 +681,7 @@ test(
 );
 
 test(
-  "createConversation seeds Claude OAuth for the effective OH_AGENT_PROFILE_ID without a local profile file",
+  "createConversation does not infer Claude OAuth from OH_AGENT_PROFILE_ID alone",
   async () => {
     const previousHome =
       process.env.HOME;
@@ -800,15 +800,10 @@ test(
       }
     }
 
-    assert.deepEqual(
-      capturedBody?.secrets,
-      {
-        CLAUDE_CODE_OAUTH_TOKEN: {
-          kind: "LookupSecret",
-          url:
-            "/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN",
-        },
-      },
+    assert.equal(
+      "secrets" in
+        (capturedBody ?? {}),
+      false,
     );
   },
 );

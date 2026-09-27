@@ -472,7 +472,6 @@ function getClaudeAgentProfileIds(
             process.env
               .OH_CLAUDE_AGENT_PROFILE_IDS,
           )),
-        process.env.OH_AGENT_PROFILE_ID,
         ...readLocalClaudeAgentProfileIds(),
       ],
     ),
