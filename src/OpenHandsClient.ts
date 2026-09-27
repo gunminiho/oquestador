@@ -21,6 +21,7 @@ export interface OpenHandsClientOptions {
   maxTransient404s?: number;
   baseBackoffMs?: number;
   maxBackoffMs?: number;
+  conversationSecretRefs?: string[];
   fetchFn?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -75,6 +76,7 @@ export class OpenHandsClient {
   private readonly maxTransient404s: number;
   private readonly baseBackoffMs: number;
   private readonly maxBackoffMs: number;
+  private readonly conversationSecretRefs: string[];
   private readonly fetchFn: typeof fetch;
   private readonly sleep: (
     ms: number,
@@ -97,6 +99,15 @@ export class OpenHandsClient {
     this.maxBackoffMs =
       options.maxBackoffMs ?? 4_000;
 
+    this.conversationSecretRefs =
+      normalizeConversationSecretRefs(
+        options.conversationSecretRefs ??
+          parseConversationSecretRefs(
+            process.env
+              .OH_CONVERSATION_SECRET_REFS,
+          ),
+      );
+
     this.fetchFn =
       options.fetchFn ?? fetch;
 
@@ -112,31 +123,52 @@ export class OpenHandsClient {
     options: CreateConversationOptions,
   ): Promise<ConversationInfo> {
     try {
+      const body: Record<string, unknown> = {
+        workspace: {
+          working_dir: options.workspace,
+          kind: "LocalWorkspace",
+        },
+        conversation_id:
+          options.conversationId,
+        agent_profile_id:
+          options.agentProfileId,
+        initial_message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: options.message,
+            },
+          ],
+          run: true,
+        },
+        autotitle: false,
+      };
+
+      if (
+        this.conversationSecretRefs.length >
+        0
+      ) {
+        body.secrets =
+          Object.fromEntries(
+            this.conversationSecretRefs.map(
+              (name) => [
+                name,
+                {
+                  kind: "lookup",
+                  url:
+                    `/api/settings/secrets/${encodeURIComponent(name)}`,
+                },
+              ],
+            ),
+          );
+      }
+
       return await this.request<ConversationInfo>(
         "/api/conversations",
         {
           method: "POST",
-          body: JSON.stringify({
-            workspace: {
-              working_dir: options.workspace,
-              kind: "LocalWorkspace",
-            },
-            conversation_id:
-              options.conversationId,
-            agent_profile_id:
-              options.agentProfileId,
-            initial_message: {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: options.message,
-                },
-              ],
-              run: true,
-            },
-            autotitle: false,
-          }),
+          body: JSON.stringify(body),
         },
         {
           retryable:
@@ -379,6 +411,47 @@ export class OpenHandsClient {
 
     await this.sleep(delay);
   }
+}
+
+function parseConversationSecretRefs(
+  value: string | undefined,
+): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return normalizeConversationSecretRefs(
+    value.split(","),
+  );
+}
+
+function normalizeConversationSecretRefs(
+  refs: string[],
+): string[] {
+  const seen =
+    new Set<string>();
+
+  return refs
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      if (
+        !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(
+          item,
+        )
+      ) {
+        throw new Error(
+          `Invalid OH_CONVERSATION_SECRET_REFS entry: ${item}`,
+        );
+      }
+
+      if (seen.has(item)) {
+        return false;
+      }
+
+      seen.add(item);
+      return true;
+    });
 }
 
 function isTransientNetworkError(

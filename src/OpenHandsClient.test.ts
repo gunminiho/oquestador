@@ -387,3 +387,83 @@ test(
     );
   },
 );
+
+test(
+  "createConversation can include lookup secret references without values",
+  async () => {
+    let capturedBody:
+      | Record<string, unknown>
+      | undefined;
+
+    const client =
+      new OpenHandsClient(
+        "http://test",
+        "key",
+        {
+          conversationSecretRefs: [
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+          ],
+          fetchFn:
+            (async (
+              _input,
+              init,
+            ) => {
+              capturedBody =
+                JSON.parse(
+                  String(init?.body),
+                ) as Record<
+                  string,
+                  unknown
+                >;
+
+              return jsonResponse({
+                id: "c",
+                execution_status:
+                  "running",
+              });
+            }) as typeof fetch,
+        },
+      );
+
+    await client
+      .createConversation({
+        workspace:
+          "/projects/task",
+        agentProfileId:
+          "profile",
+        message:
+          "hello",
+      });
+
+    assert.deepEqual(
+      capturedBody?.secrets,
+      {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          kind: "lookup",
+          url:
+            "/api/settings/secrets/CLAUDE_CODE_OAUTH_TOKEN",
+        },
+      },
+    );
+  },
+);
+
+test(
+  "invalid configured secret references are rejected",
+  async () => {
+    assert.throws(
+      () =>
+        new OpenHandsClient(
+          "http://test",
+          "key",
+          {
+            conversationSecretRefs: [
+              "../CLAUDE_CODE_OAUTH_TOKEN",
+            ],
+          },
+        ),
+      /Invalid OH_CONVERSATION_SECRET_REFS entry/,
+    );
+  },
+);
