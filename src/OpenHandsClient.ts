@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 export interface ConversationInfo {
   id: string;
   execution_status: string;
@@ -21,6 +25,9 @@ export interface OpenHandsClientOptions {
   maxTransient404s?: number;
   baseBackoffMs?: number;
   maxBackoffMs?: number;
+  conversationSecretRefs?: string[];
+  autoClaudeOauthSecretRef?: boolean;
+  claudeAgentProfileIds?: string[];
   fetchFn?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -70,11 +77,17 @@ const TRANSIENT_HTTP_STATUSES = new Set([
   504,
 ]);
 
+const CLAUDE_CODE_OAUTH_TOKEN =
+  "CLAUDE_CODE_OAUTH_TOKEN";
+
 export class OpenHandsClient {
   private readonly maxTransientRetries: number;
   private readonly maxTransient404s: number;
   private readonly baseBackoffMs: number;
   private readonly maxBackoffMs: number;
+  private readonly conversationSecretRefs: string[];
+  private readonly autoClaudeOauthSecretRef: boolean;
+  private readonly claudeAgentProfileIds: Set<string>;
   private readonly fetchFn: typeof fetch;
   private readonly sleep: (
     ms: number,
@@ -97,6 +110,26 @@ export class OpenHandsClient {
     this.maxBackoffMs =
       options.maxBackoffMs ?? 4_000;
 
+    this.autoClaudeOauthSecretRef =
+      options.autoClaudeOauthSecretRef ??
+      true;
+
+    this.claudeAgentProfileIds =
+      getClaudeAgentProfileIds(
+        options.claudeAgentProfileIds,
+      );
+
+    this.conversationSecretRefs =
+      normalizeConversationSecretRefs(
+        [
+          ...(options.conversationSecretRefs ??
+            parseConversationSecretRefs(
+              process.env
+                .OH_CONVERSATION_SECRET_REFS,
+            )),
+        ],
+      );
+
     this.fetchFn =
       options.fetchFn ?? fetch;
 
@@ -112,31 +145,67 @@ export class OpenHandsClient {
     options: CreateConversationOptions,
   ): Promise<ConversationInfo> {
     try {
+      const body: Record<string, unknown> = {
+        workspace: {
+          working_dir: options.workspace,
+          kind: "LocalWorkspace",
+        },
+        conversation_id:
+          options.conversationId,
+        agent_profile_id:
+          options.agentProfileId,
+        initial_message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: options.message,
+            },
+          ],
+          run: true,
+        },
+        autotitle: false,
+      };
+
+      const secretRefs =
+        this.conversationSecretRefs.slice();
+
+      if (
+        this.autoClaudeOauthSecretRef &&
+        this.isClaudeAgentProfile(
+          options.agentProfileId,
+        )
+      ) {
+        secretRefs.unshift(
+          CLAUDE_CODE_OAUTH_TOKEN,
+        );
+      }
+
+      const normalizedSecretRefs =
+        normalizeConversationSecretRefs(
+          secretRefs,
+        );
+
+      if (normalizedSecretRefs.length > 0) {
+        body.secrets =
+          Object.fromEntries(
+            normalizedSecretRefs
+              .map((name) => [
+                name,
+                {
+                  kind: "LookupSecret",
+                  url:
+                    `/api/settings/secrets/${encodeURIComponent(name)}`,
+                },
+              ]),
+          );
+      }
+
       return await this.request<ConversationInfo>(
         "/api/conversations",
         {
           method: "POST",
-          body: JSON.stringify({
-            workspace: {
-              working_dir: options.workspace,
-              kind: "LocalWorkspace",
-            },
-            conversation_id:
-              options.conversationId,
-            agent_profile_id:
-              options.agentProfileId,
-            initial_message: {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: options.message,
-                },
-              ],
-              run: true,
-            },
-            autotitle: false,
-          }),
+          body: JSON.stringify(body),
         },
         {
           retryable:
@@ -157,6 +226,14 @@ export class OpenHandsClient {
 
       throw error;
     }
+  }
+
+  private isClaudeAgentProfile(
+    agentProfileId: string,
+  ): boolean {
+    return this.claudeAgentProfileIds.has(
+      agentProfileId,
+    );
   }
 
   async getConversation(
@@ -379,6 +456,135 @@ export class OpenHandsClient {
 
     await this.sleep(delay);
   }
+
+}
+
+function getClaudeAgentProfileIds(
+  configuredIds:
+    | string[]
+    | undefined,
+): Set<string> {
+  return new Set(
+    normalizeList(
+      [
+        ...(configuredIds ??
+          parseList(
+            process.env
+              .OH_CLAUDE_AGENT_PROFILE_IDS,
+          )),
+        ...readLocalClaudeAgentProfileIds(),
+      ],
+    ),
+  );
+}
+
+function parseList(
+  value: string | undefined,
+): string[] {
+  return normalizeList(
+    value?.split(",") ?? [],
+  );
+}
+
+function normalizeList(
+  values: Array<string | undefined>,
+): string[] {
+  const seen =
+    new Set<string>();
+
+  return values
+    .filter(
+      (item): item is string =>
+        typeof item === "string",
+    )
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      if (seen.has(item)) {
+        return false;
+      }
+
+      seen.add(item);
+      return true;
+    });
+}
+
+function readLocalClaudeAgentProfileIds(): string[] {
+  try {
+    const profile = JSON.parse(
+      readFileSync(
+        join(
+          homedir(),
+          ".openhands",
+          "agent-profiles",
+          "claude.json",
+        ),
+        "utf8",
+      ),
+    ) as unknown;
+
+    if (
+      typeof profile !== "object" ||
+      profile === null
+    ) {
+      return [];
+    }
+
+    const record =
+      profile as Record<string, unknown>;
+
+    return [
+      record.id,
+      record.name,
+    ].filter(
+      (value): value is string =>
+        typeof value === "string" &&
+        value.length > 0,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function parseConversationSecretRefs(
+  value: string | undefined,
+): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return normalizeConversationSecretRefs(
+    value.split(","),
+  );
+}
+
+function normalizeConversationSecretRefs(
+  refs: string[],
+): string[] {
+  const seen =
+    new Set<string>();
+
+  return refs
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .filter((item) => {
+      if (
+        !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(
+          item,
+        )
+      ) {
+        throw new Error(
+          `Invalid OH_CONVERSATION_SECRET_REFS entry: ${item}`,
+        );
+      }
+
+      if (seen.has(item)) {
+        return false;
+      }
+
+      seen.add(item);
+      return true;
+    });
 }
 
 function isTransientNetworkError(
