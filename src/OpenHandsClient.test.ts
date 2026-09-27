@@ -539,8 +539,9 @@ test(
         "http://test",
         "key",
         {
-          autoClaudeOauthSecretRef:
-            false,
+          claudeAgentProfileIds: [
+            "claude-profile",
+          ],
           fetchFn:
             (async (
               input,
