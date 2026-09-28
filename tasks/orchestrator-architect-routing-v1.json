@@ -1,0 +1,35 @@
+{
+  "id": "orchestrator-architect-routing-v1",
+  "repository": {
+    "owner": "gunminiho",
+    "name": "oquestador"
+  },
+  "workspace": "/projects/oquestador",
+  "baseBranch": "main",
+  "workingBranch": "feat/orchestrator-architect-routing-v1",
+  "objective": "ARCH-01: implementar la base de Architect Mode para programas multi-milestone. Añadir Program Manifest versionado y routing explícito por rol (architect/implementer/reviewer) con profile/provider/model/reasoning-effort separados, sin fallback silencioso, y persistir requested vs resolved execution. Esta fase debe permitir que un futuro Program Runner decida exactamente qué perfil/modelo/esfuerzo usa cada milestone y cada rol, pero NO debe implementar todavía el DAG ni ejecutar roadmaps completos; eso queda para ARCH-02/03.",
+  "acceptanceCriteria": [
+    "Crear un schema versionado de `ProgramManifest` y loader/validator sin efectos laterales. Debe soportar al menos: program id, repositorios, milestones, dependencias declarativas, routing defaults y overrides por milestone/rol, y política de fallback.",
+    "El routing de cada rol debe usar campos separados para `profileId` o profile alias, `provider`, `model` y `effort`; no concatenar model+effort en un string.",
+    "Soportar routing separado para `implementer` y `reviewer` por milestone; reservar también un routing de `architect` a nivel programa para fases posteriores.",
+    "Añadir `allowFallback` explícito. Default debe ser `false`. Si el route solicitado no puede resolverse exactamente, el run debe bloquearse con un error estructurado; nunca cambiar silenciosamente de provider/model/effort/profile.",
+    "Implementar un `ExecutionRouteResolver` testeable que convierta requested execution en resolved execution usando un catálogo/configuración explícita de perfiles disponibles. El resolver debe verificar compatibilidad exacta de provider/model/effort y devolver una razón clara de bloqueo ante mismatch.",
+    "La resolución debe poder usar los perfiles ACP existentes de Agent Canvas sin leer ni persistir credenciales. Si se inspecciona metadata de perfiles, sólo leer id/name/provider/model/effort y nunca secret values.",
+    "Definir y persistir `RequestedExecution` y `ResolvedExecution` como tipos first-class. `ResolvedExecution` debe incluir al menos role, profileId, provider, model, effort y la evidencia/metadata usada para resolverlo.",
+    "Extender el estado persistente necesario para que cada etapa registre requested y resolved execution antes de crear conversación; una vez creada, registrar también conversationId y, cuando aplique, reviewed/approved Git SHA.",
+    "No permitir que un cambio de configuración posterior reescriba retroactivamente el resolved execution ya persistido de una etapa iniciada.",
+    "Modificar el child workflow actual para permitir `agentProfileId` distinto por etapa: preparation/implementation/review. Mantener compatibilidad con las tareas existentes que sólo pasan un único `OH_AGENT_PROFILE_ID`.",
+    "Para tareas legacy sin routing explícito, preservar exactamente el comportamiento actual usando el perfil único existente; no inferir modelo/effort en esos flujos ni romper BOOT-01/BOOT-02.",
+    "Extender el Control Plane/MCP sólo lo mínimo necesario para aceptar routing explícito o un manifest de programa en fases futuras; no duplicar lógica de resolución dentro del MCP.",
+    "Añadir validación estricta de provider/model/effort/profile alias. Rechazar strings vacíos, campos desconocidos cuando corresponda y combinaciones incompletas que no permitan resolución determinista.",
+    "Añadir pruebas de: default routing, override por milestone, implementer/reviewer distintos, exact match, mismatch de model, mismatch de effort, profile inexistente, fallback deshabilitado, fallback permitido sólo cuando esté declarado, persistencia requested/resolved, y compatibilidad legacy.",
+    "Añadir una prueba específica que garantice que un request `model=gpt-5.5` + `effort=high` no puede resolverse a un perfil con otro modelo/esfuerzo aunque el profileId sea válido.",
+    "Añadir una prueba específica que garantice que `model` y `effort` permanecen campos separados en manifests, tipos y estado persistido.",
+    "Actualizar README con ARCH-01, ejemplos de manifest y explicación de no-silent-fallback, requested vs resolved execution y compatibilidad legacy.",
+    "No implementar todavía scheduling/DAG, ProgramRunState completo, ejecución automática de múltiples milestones, Architect Gate, remediation tasks ni final audit; dejar interfaces limpias para ARCH-02+.",
+    "No crear, editar ni rotar secretos de Agent Canvas. No incluir tokens/keys en tests, fixtures, manifests o logs.",
+    "Antes de entregar ejecutar `npm test`, `npm run typecheck` y `git diff --check origin/main..HEAD`; todos deben pasar.",
+    "No hacer merge manual desde el agente. Entregar `IMPLEMENTATION_RESULT: READY_FOR_REVIEW`; el Reviewer revisa el HEAD exacto publicado y el orquestador conserva la responsabilidad del merge."
+  ],
+  "maxReviewCycles": 3
+}
