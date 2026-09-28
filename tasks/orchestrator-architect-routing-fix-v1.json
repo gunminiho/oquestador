@@ -1,0 +1,25 @@
+{
+  "id": "orchestrator-architect-routing-fix-v1",
+  "repository": {
+    "owner": "gunminiho",
+    "name": "oquestador"
+  },
+  "workspace": "/projects/oquestador",
+  "baseBranch": "feat/orchestrator-architect-routing-v1",
+  "workingBranch": "fix/orchestrator-architect-routing-v1-review",
+  "objective": "Aplicar exclusivamente las correcciones solicitadas por el reviewer final del PR #11 (ARCH-01) sobre el HEAD actual de la rama feat/orchestrator-architect-routing-v1, preservando el diseño de ARCH-01 y sin ampliar scope. El resultado de este task debe mergearse a la rama base del PR #11 para que el PR original quede actualizado y pueda recibir una revisión final nueva.",
+  "acceptanceCriteria": [
+    "Corregir la migración RunState v5 -> v6 para conservar todos los campos de control ya existentes en v5, incluyendo controlSignal, pausedFromState, cancelledFromState, lastBlockerKey y repeatedBlockerCount. Añadir únicamente stageExecutions cuando falte. Mantener las migraciones de versiones anteriores correctas y cubrir con tests un estado v5 pausado/cancel-requested que no pierda información ni reinicie etapa.",
+    "Hacer que la selección efectiva de perfil por etapa quede persistida/frozen antes de crear la conversación incluso cuando el caller sólo aporta stageAgentProfileIds y no stageExecutions. En resume, reutilizar exactamente el perfil congelado y no permitir que una configuración posterior cambie el perfil de una conversación/etapa ya iniciada.",
+    "Preservar compatibilidad legacy: cuando sólo existe agentProfileId global y no hay routing explícito, no inventar provider/model/effort ni crear RequestedExecution/ResolvedExecution ficticios. El freeze de stageAgentProfileIds debe registrar sólo la información mínima necesaria para fijar el profileId, o usar una estructura separada si eso mantiene más limpio el contrato.",
+    "Endurecer validateRunState para stageExecutions: validar estrictamente RequestedExecution y ResolvedExecution, rechazar campos desconocidos, validar role/provider/model/effort/profileId/profileAlias/allowFallback/evidence, coherencia del role con la etapa cuando aplique, y garantizar que save() nunca serializa propiedades arbitrarias como apiKey, token o credentialMetadata.",
+    "Persistir únicamente una allowlist explícita de campos públicos para requested/resolved execution y evidence. No almacenar secrets, credential metadata ni blobs arbitrarios.",
+    "Corregir ProgramManifest para que allowFallback use false sólo cuando el campo está ausente. Si allowFallback está presente, debe ser boolean; null, strings, numbers u otros valores deben rechazarse.",
+    "Añadir tests de regresión específicos para los cuatro findings del reviewer, incluyendo crash/resume con stageAgentProfileIds A -> B que debe seguir usando A después del resume.",
+    "Mantener model y effort separados y no introducir silent fallback.",
+    "No implementar ARCH-02+, DAG, Program Runner, Architect Gates ni Final Audit.",
+    "Ejecutar npm test, npm run typecheck y git diff --check origin/feat/orchestrator-architect-routing-v1..HEAD; todos deben pasar.",
+    "No hacer merge manual desde el agente. Entregar IMPLEMENTATION_RESULT: READY_FOR_REVIEW; Reviewer debe revisar el HEAD exacto y el orquestador conserva publicación/PR/merge."
+  ],
+  "maxReviewCycles": 3
+}
