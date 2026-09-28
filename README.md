@@ -75,6 +75,8 @@ Transient transport conditions include:
 - `ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN`;
 - common fetch/socket/network reset failures.
 
+During conversation polling, Agent Canvas may also briefly expose an incomplete persisted conversation state. A narrowly matched HTTP 500 whose sanitized backend error is specifically `No such file or directory` for `/agent-canvas/conversations/.../base_state.json` is treated like the existing transient conversation 404 path: it receives the same bounded retry budget. Unrelated HTTP 500 responses remain non-transient and are not retried blindly.
+
 These use bounded exponential backoff. Transient conversation 404s are also bounded.
 
 If the retry budget is exhausted, the workflow records `failureKind: TRANSIENT` while preserving the active stage and conversation ID. Re-running the same task can resume that stage and the same deterministic conversation rather than creating a duplicate.
