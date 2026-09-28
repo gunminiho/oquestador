@@ -292,6 +292,106 @@ test(
 
 
 test(
+  "transient Agent Canvas missing base_state 500 can recover",
+  async () => {
+    let calls = 0;
+
+    const client =
+      new OpenHandsClient(
+        "http://test",
+        "key",
+        {
+          fetchFn:
+            (async () => {
+              calls += 1;
+
+              return calls === 1
+                ? new Response(
+                    JSON.stringify({
+                      detail:
+                        "Internal Server Error",
+                      exception:
+                        "[Errno 2] No such file or directory: '/home/openhands/.openhands/agent-canvas/conversations/abc/base_state.json'",
+                    }),
+                    {
+                      status: 500,
+                    },
+                  )
+                : jsonResponse({
+                    id: "c",
+                    execution_status:
+                      "finished",
+                  });
+            }) as typeof fetch,
+          sleep:
+            async () => {},
+          maxTransient404s:
+            2,
+        },
+      );
+
+    const result =
+      await client
+        .waitUntilFinished(
+          "c",
+          {
+            pollIntervalMs: 0,
+          },
+        );
+
+    assert.equal(
+      result.execution_status,
+      "finished",
+    );
+
+    assert.equal(
+      calls,
+      2,
+    );
+  },
+);
+
+test(
+  "unrelated OpenHands 500 during polling is not treated as missing conversation state",
+  async () => {
+    const client =
+      new OpenHandsClient(
+        "http://test",
+        "key",
+        {
+          fetchFn:
+            (async () =>
+              new Response(
+                "other internal error",
+                {
+                  status: 500,
+                },
+              )) as typeof fetch,
+          sleep:
+            async () => {},
+          maxTransient404s:
+            2,
+        },
+      );
+
+    await assert.rejects(
+      client.waitUntilFinished(
+        "c",
+        {
+          pollIntervalMs: 0,
+        },
+      ),
+      (
+        error: unknown,
+      ) =>
+        error instanceof
+          OpenHandsApiError &&
+        error.status === 500,
+    );
+  },
+);
+
+test(
   "transient 404 polling fails after its bounded retry budget",
   async () => {
     const client =
