@@ -271,7 +271,7 @@ async function handleRequest(
       return;
     }
 
-    const { taskId, agentProfileId } =
+    const { taskId, agentProfileId, stageAgentProfileIds } =
       asStartRunBody(body);
 
     try {
@@ -279,6 +279,7 @@ async function handleRequest(
         await runManager.startRun({
           taskId,
           agentProfileId,
+          stageAgentProfileIds,
         });
       sendJson(res, 202, summary);
     } catch (error: unknown) {
@@ -357,6 +358,7 @@ function asStartRunBody(
 ): {
   taskId: unknown;
   agentProfileId: unknown;
+  stageAgentProfileIds: unknown;
 } {
   if (
     typeof body !== "object" ||
@@ -375,6 +377,7 @@ function asStartRunBody(
     taskId: record.taskId,
     agentProfileId:
       record.agentProfileId,
+    stageAgentProfileIds: record.stageAgentProfileIds,
   };
 }
 

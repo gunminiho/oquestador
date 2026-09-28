@@ -36,6 +36,7 @@ class FakeClient {
   waitCount = 0;
   finalCount = 0;
   messages: string[] = [];
+  profileIds: string[] = [];
   reviewVerdicts: string[] = ["APPROVED"];
   reviewResponses: string[] = [];
   reviewCount = 0;
@@ -50,6 +51,7 @@ class FakeClient {
 
   async createConversation(options: {
     message: string;
+    agentProfileId: string;
     conversationId?: string;
   }): Promise<{
     id: string;
@@ -57,6 +59,7 @@ class FakeClient {
   }> {
     this.createCount += 1;
     this.messages.push(options.message);
+    this.profileIds.push(options.agentProfileId);
     const id =
       options.conversationId ?? `conversation-${this.createCount}`;
     this.statuses.set(id, "finished");
@@ -387,6 +390,15 @@ test("resumes from PREPARING and completes workflow", async () => {
   assert.equal(finalState.implementationCycle, 1);
   assert.equal(finalState.pullRequestNumber, 123);
   assert.equal(client.createCount, 3);
+});
+
+test("frozen resolved execution selects the effective profile for each stage", async () => {
+  const store = temporaryStore();
+  const client = new FakeClient();
+  const requested = (role: "implementer" | "reviewer", profileId: string) => ({ role, profileId, provider: "openai", model: "gpt-5.5", effort: "high", allowFallback: false } as const);
+  const resolved = (role: "implementer" | "reviewer", profileId: string) => ({ role, profileId, provider: "openai", model: "gpt-5.5", effort: "high", evidence: { matchedBy: "profileId" as const } });
+  await runWorkflow({ client, task: task(), store, agentProfileId: "legacy", stageAgentProfileIds: { IMPLEMENTATION: "incorrect" }, stageExecutions: { IMPLEMENTATION: { requested: requested("implementer", "implementer-profile"), resolved: resolved("implementer", "implementer-profile") }, REVIEW: { requested: requested("reviewer", "reviewer-profile"), resolved: resolved("reviewer", "reviewer-profile") } }, pollIntervalMs: 0 });
+  assert.deepEqual(client.profileIds, ["legacy", "implementer-profile", "reviewer-profile"]);
 });
 
 test("NO_CHANGES_REQUIRED skips branch publication and Pull Request creation", async () => {

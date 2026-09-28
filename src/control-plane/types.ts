@@ -59,6 +59,8 @@ export interface ControlPlaneRunRecord {
   runId: string;
   taskId: string;
   agentProfileId: string;
+  /** Optional per-stage profile routing; legacy callers keep agentProfileId. */
+  stageAgentProfileIds?: Partial<Record<WorkflowStage, string>>;
   workspace: string;
   createdAt: string;
   updatedAt: string;

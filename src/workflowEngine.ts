@@ -1845,7 +1845,7 @@ async function runAgentStage(
             workspace:
               options.task
                 .workspace,
-            agentProfileId: agentProfileForStage(options, stage),
+            agentProfileId: agentProfileForStage(options, runState, stage),
             message,
             conversationId,
           });
@@ -1891,6 +1891,7 @@ async function runAgentStage(
       conversation =
         await getOrCreateConversation(
           options,
+          runState,
           conversationId,
           stage,
           message,
@@ -1969,6 +1970,7 @@ async function runAgentStage(
 
 async function getOrCreateConversation(
   options: RunWorkflowOptions,
+  state: RunState,
   conversationId: string,
   stage: WorkflowStage,
   message: string,
@@ -1999,7 +2001,7 @@ async function getOrCreateConversation(
         workspace:
           options.task
             .workspace,
-        agentProfileId: agentProfileForStage(options, stage),
+        agentProfileId: agentProfileForStage(options, state, stage),
         message,
         conversationId,
       });
@@ -2017,7 +2019,11 @@ async function getOrCreateConversation(
   };
 }
 
-function agentProfileForStage(options: RunWorkflowOptions, stage: WorkflowStage): string {
+function agentProfileForStage(options: RunWorkflowOptions, state: RunState, stage: WorkflowStage): string {
+  const frozen = state.stageExecutions[stage]?.resolved.profileId;
+  if (frozen) return frozen;
+  const requested = options.stageExecutions?.[stage]?.resolved.profileId;
+  if (requested) return requested;
   return options.stageAgentProfileIds?.[stage] ?? options.agentProfileId;
 }
 

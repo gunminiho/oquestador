@@ -17,7 +17,6 @@ export interface AvailableExecutionProfile {
   provider: string;
   model: string;
   effort: string;
-  metadata?: Record<string, string>;
 }
 
 export interface ResolvedExecution {
@@ -26,7 +25,8 @@ export interface ResolvedExecution {
   provider: string;
   model: string;
   effort: string;
-  evidence: { matchedBy: "profileId" | "profileAlias" | "exactRoute"; profileName?: string; metadata?: Record<string, string> };
+  /** Only public profile identity metadata is retained; credentials are never read. */
+  evidence: { matchedBy: "profileId" | "profileAlias" | "exactRoute"; profileName?: string };
 }
 
 export interface ResolutionFailure {
@@ -64,7 +64,7 @@ export class ExecutionRouteResolver {
 }
 
 function exact(profile: AvailableExecutionProfile, request: RequestedExecution): boolean { return profile.provider === request.provider && profile.model === request.model && profile.effort === request.effort; }
-function resolved(request: RequestedExecution, profile: AvailableExecutionProfile, matchedBy: ResolvedExecution["evidence"]["matchedBy"]): ResolvedExecution { return { role: request.role, profileId: profile.id, provider: profile.provider, model: profile.model, effort: profile.effort, evidence: { matchedBy, ...(profile.name ? { profileName: profile.name } : {}), ...(profile.metadata ? { metadata: { ...profile.metadata } } : {}) } }; }
+function resolved(request: RequestedExecution, profile: AvailableExecutionProfile, matchedBy: ResolvedExecution["evidence"]["matchedBy"]): ResolvedExecution { return { role: request.role, profileId: profile.id, provider: profile.provider, model: profile.model, effort: profile.effort, evidence: { matchedBy, ...(profile.name ? { profileName: profile.name } : {}) } }; }
 function failure(code: ResolutionFailure["code"], message: string, requested: RequestedExecution): ResolutionFailure { return { blocked: true, code, message, requested }; }
 function nonEmpty(value: unknown, field: string): asserts value is string { if (typeof value !== "string" || !value.trim()) throw new Error(`${field} must be a non-empty string.`); }
 export function validateRequestedExecution(value: RequestedExecution): void { nonEmpty(value.role, "RequestedExecution.role"); if (value.role !== "architect" && value.role !== "implementer" && value.role !== "reviewer") throw new Error("RequestedExecution.role is invalid."); nonEmpty(value.provider, "RequestedExecution.provider"); nonEmpty(value.model, "RequestedExecution.model"); nonEmpty(value.effort, "RequestedExecution.effort"); if (typeof value.allowFallback !== "boolean") throw new Error("RequestedExecution.allowFallback must be boolean."); if (value.profileId !== undefined) nonEmpty(value.profileId, "RequestedExecution.profileId"); if (value.profileAlias !== undefined) nonEmpty(value.profileAlias, "RequestedExecution.profileAlias"); if (value.profileId && value.profileAlias) throw new Error("RequestedExecution may specify profileId or profileAlias, not both."); }
