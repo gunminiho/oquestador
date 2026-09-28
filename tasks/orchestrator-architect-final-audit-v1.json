@@ -1,0 +1,28 @@
+{
+  "id": "orchestrator-architect-final-audit-v1",
+  "repository": {
+    "owner": "gunminiho",
+    "name": "oquestador"
+  },
+  "workspace": "/projects/oquestador",
+  "baseBranch": "main",
+  "workingBranch": "feat/orchestrator-architect-final-audit-v1",
+  "objective": "ARCH-05: implementar la auditoría final del Architect sobre un programa completo y el ciclo trazable de remediation. Al terminar los milestones, el Architect relee los roadmaps congelados contra código, tests, PR SHAs, CI/deploy/smoke evidence y estado del programa; si encuentra gaps crea remediation milestones/tasks trazables y los ejecuta por el mismo Program Runner hasta completar o bloquear por límites explícitos.",
+  "acceptanceCriteria": [
+    "Implementar FinalArchitectAudit first-class que compare ProgramPlan/roadmaps congelados contra evidencias persistidas de todos los milestones y repos.",
+    "La auditoría debe producir COMPLETE, REMEDIATION_REQUIRED o BLOCKED_EXTERNAL con razones/evidencia estructuradas; no usar un simple texto libre como estado.",
+    "Crear remediation ids deterministas/trazables como `ARCH-FIX-001`, con origin=FINAL_AUDIT, reason, affected repo/milestone, dependencies y routing solicitado/resuelto.",
+    "Remediation debe pasar por el mismo implementer -> reviewer -> architect gate; el Architect no debe editar código directamente.",
+    "Limitar ciclos de remediation y detectar blocker repetido; nunca loop infinito.",
+    "No cerrar COMPLETE si faltan CI/deploy/smoke evidences exigidas por el plan.",
+    "Persistir un final audit report con SHAs exactos de PR/merge y decisiones, sin secretos.",
+    "Exponer desde MCP/Control Plane la posibilidad de consultar final audit, remediation y estado final del programa desde Canvas.",
+    "Añadir tests E2E in-process de programa completo, gap detectado -> ARCH-FIX -> re-audit -> COMPLETE, además de blocker externo y límite de remediation.",
+    "Añadir un fixture/demo de programa de dos repos con milestones backend/frontend para demostrar el flujo sin red externa.",
+    "Actualizar README con el flujo final de Architect Mode y ejemplo de uso desde Agent Canvas sin PowerShell.",
+    "Criterio operativo final: un programa normal debe poder crearse/iniciarse/observarse/pausarse/reanudarse y completarse desde Agent Canvas mediante MCP, sin requerir que el usuario abra PowerShell después de que Control Plane/MCP estén levantados.",
+    "Pasar npm test, npm run typecheck y git diff --check origin/main..HEAD.",
+    "No hacer merge manual; entregar READY_FOR_REVIEW."
+  ],
+  "maxReviewCycles": 3
+}
