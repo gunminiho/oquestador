@@ -295,8 +295,9 @@ export class OpenHandsClient {
         }
       } catch (error: unknown) {
         if (
-          !(error instanceof OpenHandsApiError) ||
-          error.status !== 404
+          !isTransientConversationStateError(
+            error,
+          )
         ) {
           throw error;
         }
@@ -308,7 +309,7 @@ export class OpenHandsClient {
           this.maxTransient404s
         ) {
           throw new OpenHandsTransientError(
-            `Conversation ${conversationId} exceeded ${this.maxTransient404s} transient 404 retries.`,
+            `Conversation ${conversationId} exceeded ${this.maxTransient404s} transient conversation-state retries.`,
             {
               cause: error,
             },
@@ -316,7 +317,7 @@ export class OpenHandsClient {
         }
 
         console.log(
-          `Conversation ${conversationId} temporarily returned 404 ` +
+          `Conversation ${conversationId} temporarily returned an incomplete conversation state ` +
             `(retry ${transient404Count}/${this.maxTransient404s}); continuing to poll...`,
         );
       }
@@ -585,6 +586,33 @@ function normalizeConversationSecretRefs(
       seen.add(item);
       return true;
     });
+}
+
+function isTransientConversationStateError(
+  error: unknown,
+): boolean {
+  if (
+    !(error instanceof OpenHandsApiError)
+  ) {
+    return false;
+  }
+
+  if (error.status === 404) {
+    return true;
+  }
+
+  return (
+    error.status === 500 &&
+    error.message.includes(
+      "No such file or directory",
+    ) &&
+    error.message.includes(
+      "/agent-canvas/conversations/",
+    ) &&
+    error.message.includes(
+      "/base_state.json",
+    )
+  );
 }
 
 function isTransientNetworkError(
