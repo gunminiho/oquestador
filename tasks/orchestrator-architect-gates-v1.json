@@ -1,0 +1,27 @@
+{
+  "id": "orchestrator-architect-gates-v1",
+  "repository": {
+    "owner": "gunminiho",
+    "name": "oquestador"
+  },
+  "workspace": "/projects/oquestador",
+  "baseBranch": "main",
+  "workingBranch": "feat/orchestrator-architect-gates-v1",
+  "objective": "ARCH-04: añadir el rol Architect y sus gates separados del Reviewer. El Architect debe compilar/validar roadmaps declarados en el programa, autorizar avance entre milestones/deploy gates basándose en evidencia concreta y producir decisiones persistidas y auditables. Reviewer sigue revisando cada PR; Architect Gate revisa cumplimiento del roadmap/dependencias/deploy-smoke antes de liberar el siguiente tramo.",
+  "acceptanceCriteria": [
+    "Definir ArchitectDecision/GateResult first-class con APPROVED, CHANGES_REQUIRED o BLOCKED_EXTERNAL y razón/evidencia obligatoria cuando no aprueba.",
+    "Architect y Reviewer deben ser roles distintos con routing independiente; una aprobación de Reviewer no sustituye Architect Gate.",
+    "El Architect debe leer sólo las fuentes roadmap/manifest declaradas por el ProgramPlan congelado; registrar fingerprints y usar ROADMAP_CHANGED si cambian.",
+    "Implementar gates configurables por milestone o grupo: dependency gate, PR/review gate, CI gate y deploy/smoke gate declarativo.",
+    "No inventar resultados de CI/deploy/smoke: cada gate debe exigir evidencia estructurada/proveedor definido o quedar BLOCKED.",
+    "Permitir que un gate CHANGES_REQUIRED cree una solicitud de corrección vinculada al milestone sin hacer cambios Git destructivos por sí mismo.",
+    "Persistir architect conversation id/profile/model/effort, decisión, evidencia referenciada, milestone/PR SHA y timestamp.",
+    "Añadir MCP/Control Plane `architect_audit` o `architect_gate` para disparar/reconsultar gates desde Canvas cuando corresponda.",
+    "Evitar loops infinitos: límites configurables para correcciones/gates y escalado a BLOCKED al agotarlos.",
+    "Agregar tests con roadmap fixtures para gate aprobado, CI ausente, smoke faltante, roadmap changed, reviewer approved pero architect blocked y routing del Architect.",
+    "Actualizar README y pasar test/typecheck/diff-check.",
+    "No implementar aún la auditoría final integral/remediation loop; eso queda ARCH-05.",
+    "No hacer merge manual; entregar READY_FOR_REVIEW."
+  ],
+  "maxReviewCycles": 3
+}
