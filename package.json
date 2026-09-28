@@ -6,7 +6,9 @@
   "scripts": {
     "test": "tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "control-plane": "tsx src/control-plane/main.ts"
+    "control-plane": "tsx src/control-plane/main.ts",
+    "mcp": "tsx src/mcp/main.ts",
+    "mcp:smoke": "tsx --test src/mcp/smoke.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -16,5 +18,8 @@
     "@types/node": "^26.6.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1"
   }
 }

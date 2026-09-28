@@ -37,6 +37,8 @@ const RUN_ACTION_PATTERN =
   /^\/api\/runs\/([^/]+)\/(pause|resume|cancel)$/;
 const RUN_ITEM_PATTERN =
   /^\/api\/runs\/([^/]+)$/;
+const TASK_ITEM_PATTERN =
+  /^\/api\/tasks\/([^/]+)$/;
 
 /**
  * Minimal, dependency-free HTTP Control Plane built on node:http. No web
@@ -192,6 +194,45 @@ async function handleRequest(
       error: "forbidden",
       message: "Invalid control token.",
     });
+    return;
+  }
+
+  if (
+    method === "GET" &&
+    pathname === "/api/tasks"
+  ) {
+    try {
+      sendJson(res, 200, {
+        tasks: runManager.listTasks(),
+      });
+    } catch (error: unknown) {
+      sendManagerError(res, error);
+    }
+
+    return;
+  }
+
+  const taskMatch =
+    TASK_ITEM_PATTERN.exec(pathname);
+
+  if (
+    method === "GET" &&
+    taskMatch !== null
+  ) {
+    const taskId = decodeURIComponent(
+      taskMatch[1] ?? "",
+    );
+
+    try {
+      sendJson(
+        res,
+        200,
+        runManager.getTask(taskId),
+      );
+    } catch (error: unknown) {
+      sendManagerError(res, error);
+    }
+
     return;
   }
 

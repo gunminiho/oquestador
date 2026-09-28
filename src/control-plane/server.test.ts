@@ -174,6 +174,68 @@ test("mutating routes reject missing and invalid auth", async () => {
   }
 });
 
+test("GET /api/tasks lists valid task metadata and rejects traversal", async () => {
+  const { server, baseUrl, taskRoot } =
+    await startTestServer();
+  writeTaskFixture(taskRoot, "task-a");
+  writeFileSync(
+    join(taskRoot, "invalid.json"),
+    "{\"id\":\"bad id\"}",
+    "utf8",
+  );
+
+  try {
+    const missingAuth = await fetch(
+      `${baseUrl}/api/tasks`,
+    );
+    assert.equal(missingAuth.status, 401);
+
+    const listed = await fetch(
+      `${baseUrl}/api/tasks`,
+      { headers: authHeaders() },
+    );
+    assert.equal(listed.status, 200);
+    const body = await listed.json();
+    assert.deepEqual(
+      body.tasks.map(
+        (task: { taskId: string }) =>
+          task.taskId,
+      ),
+      ["task-a"],
+    );
+    assert.equal(
+      body.tasks[0].repository.owner,
+      "gunminiho",
+    );
+    assert.equal(
+      body.tasks[0].objective,
+      "Do the fixture thing.",
+    );
+    assert.equal(
+      "workspace" in body.tasks[0],
+      false,
+    );
+
+    const one = await fetch(
+      `${baseUrl}/api/tasks/task-a`,
+      { headers: authHeaders() },
+    );
+    assert.equal(one.status, 200);
+    assert.equal(
+      (await one.json()).taskId,
+      "task-a",
+    );
+
+    const traversal = await fetch(
+      `${baseUrl}/api/tasks/..%2Foutside`,
+      { headers: authHeaders() },
+    );
+    assert.equal(traversal.status, 400);
+  } finally {
+    await server.close();
+  }
+});
+
 test("POST /api/runs validates body, rejects unknown/invalid taskId, and starts a valid run", async () => {
   const { server, baseUrl, taskRoot, client } =
     await startTestServer();
