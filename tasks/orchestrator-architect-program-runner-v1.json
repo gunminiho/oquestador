@@ -1,0 +1,30 @@
+{
+  "id": "orchestrator-architect-program-runner-v1",
+  "repository": {
+    "owner": "gunminiho",
+    "name": "oquestador"
+  },
+  "workspace": "/projects/oquestador",
+  "baseBranch": "main",
+  "workingBranch": "feat/orchestrator-architect-program-runner-v1",
+  "objective": "ARCH-03: implementar el Program Runner que ejecuta milestones del DAG reutilizando el child workflow existente, aplica routing exacto de ARCH-01, respeta ProgramRunState de ARCH-02 y expone control programático por Control Plane y MCP para que un programa completo pueda iniciarse/observarse/pausarse/reanudarse/cancelarse desde Agent Canvas.",
+  "acceptanceCriteria": [
+    "Reutilizar `runTask`/workflowEngine como child workflow; no duplicar lógica de GitHub, review, merge, pause/cancel ni secrets.",
+    "Ejecutar sólo milestones READY cuyas dependencias estén satisfechas; soportar paralelismo configurable pero default conservador y determinista.",
+    "Aplicar routing exacto implementer/reviewer por milestone; si requested route no resuelve exactamente y allowFallback=false, bloquear el milestone/programa sin silent fallback.",
+    "Persistir por child: task/milestone id, repository, working branch, PR, requested/resolved execution, conversation ids, reviewed/approved SHA y resultado.",
+    "No permitir que dos milestones escriban simultáneamente el mismo repo/branch/workspace cuando exista conflicto; serializar o bloquear de forma determinista.",
+    "Añadir Control Plane program endpoints mínimos: create/start/status/list/pause/resume/cancel y events o equivalente auditable.",
+    "Añadir MCP tools estructuradas equivalentes: `program_create`/`program_start`, `program_status`, `program_list`, `program_pause`, `program_resume`, `program_cancel`, `program_events`, y `milestone_retry` si el estado lo permite.",
+    "Las tools MCP deben ser adaptadores del Control Plane, no ejecutar workflows directamente.",
+    "Un start de programa debe ser no bloqueante; status/events deben permitir observar progreso sin terminal.",
+    "Program pause/cancel debe ser cooperativo: no iniciar nuevos milestones después de la señal; child activo termina hasta checkpoint seguro salvo cancelación soportada.",
+    "Resume debe reutilizar estado persistido y no repetir milestones ya DONE/APPROVED.",
+    "Resource limit de un child debe reflejarse como programa pausado/reanudable, no como retry infinito.",
+    "Agregar tests E2E in-process con fakes para un DAG de múltiples milestones, routing distinto por rol, pause/resume, restart recovery, child BLOCKED_EXTERNAL, resource limit y no-silent-fallback.",
+    "No implementar todavía Architect Gate semántico ni final audit; eso queda ARCH-04/05.",
+    "Actualizar README y pasar test/typecheck/diff-check.",
+    "No hacer merge manual; entregar READY_FOR_REVIEW."
+  ],
+  "maxReviewCycles": 3
+}
