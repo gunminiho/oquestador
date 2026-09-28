@@ -82,6 +82,19 @@ export interface RunSummary {
   updatedAt: string;
 }
 
+export interface TaskSummary {
+  taskId: string;
+  repository: {
+    owner: string;
+    name: string;
+  };
+  baseBranch: string;
+  workingBranch: string;
+  objective: string;
+  maxReviewCycles: number | null;
+  repeatedBlockerThreshold: number | null;
+}
+
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
 export class ConflictError extends Error {

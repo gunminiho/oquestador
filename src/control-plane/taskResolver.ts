@@ -1,7 +1,13 @@
-import { existsSync } from "node:fs";
+import {
+  type Dirent,
+  existsSync,
+  readdirSync,
+} from "node:fs";
 import { resolve, sep } from "node:path";
 
+import { loadWorkflowTask } from "../taskLoader";
 import { NotFoundError, ValidationError } from "./types";
+import type { TaskSummary } from "./types";
 
 const TASK_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 
@@ -53,4 +59,81 @@ export function resolveTaskFile(
   }
 
   return candidate;
+}
+
+export function summarizeTaskFile(
+  taskRoot: string,
+  taskId: unknown,
+): TaskSummary {
+  const task = loadWorkflowTask(
+    resolveTaskFile(taskRoot, taskId),
+  );
+
+  return {
+    taskId: task.id,
+    repository: {
+      owner: task.repository.owner,
+      name: task.repository.name,
+    },
+    baseBranch: task.baseBranch,
+    workingBranch:
+      task.workingBranch,
+    objective: task.objective,
+    maxReviewCycles:
+      task.maxReviewCycles ?? null,
+    repeatedBlockerThreshold:
+      task.repeatedBlockerThreshold ??
+      null,
+  };
+}
+
+export function listTaskSummaries(
+  taskRoot: string,
+): TaskSummary[] {
+  const root = resolve(taskRoot);
+  let entries: Dirent[];
+
+  try {
+    entries = readdirSync(root, {
+      withFileTypes: true,
+    });
+  } catch (error: unknown) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return [];
+    }
+
+    throw error;
+  }
+
+  return entries
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.endsWith(".json"),
+    )
+    .flatMap((entry) => {
+      const taskId = entry.name.slice(
+        0,
+        -".json".length,
+      );
+
+      if (!TASK_ID_PATTERN.test(taskId)) {
+        return [];
+      }
+
+      try {
+        return [
+          summarizeTaskFile(root, taskId),
+        ];
+      } catch {
+        return [];
+      }
+    })
+    .sort((a, b) =>
+      a.taskId.localeCompare(b.taskId),
+    );
 }

@@ -17,7 +17,11 @@ import {
 
 import { deriveControlPlaneStatus } from "./status";
 import { ControlPlaneStore } from "./store";
-import { resolveTaskFile } from "./taskResolver";
+import {
+  listTaskSummaries,
+  resolveTaskFile,
+  summarizeTaskFile,
+} from "./taskResolver";
 import {
   BLOCKING_STATUSES,
   CONTROL_PLANE_STATE_VERSION,
@@ -28,6 +32,7 @@ import {
   ValidationError,
   type ControlPlaneRunRecord,
   type RunSummary,
+  type TaskSummary,
 } from "./types";
 
 export interface RunManagerDependencies {
@@ -333,6 +338,21 @@ export class RunManager {
           b.createdAt,
         ),
       );
+  }
+
+  listTasks(): TaskSummary[] {
+    return listTaskSummaries(
+      this.deps.taskRoot,
+    );
+  }
+
+  getTask(
+    taskId: unknown,
+  ): TaskSummary {
+    return summarizeTaskFile(
+      this.deps.taskRoot,
+      taskId,
+    );
   }
 
   private resolveAgentProfileId(

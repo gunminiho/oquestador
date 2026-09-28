@@ -132,6 +132,8 @@ Neither front end reimplements any part of the workflow; `npx tsx src/orchestrat
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
 | `GET` | `/health` | none | Liveness only. |
+| `GET` | `/api/tasks` | Bearer | Lists valid task metadata from `ORCHESTRATOR_TASK_ROOT`; invalid files are ignored safely. |
+| `GET` | `/api/tasks/:taskId` | Bearer | Returns one valid task's public metadata. 404 if the task is unknown. |
 | `GET` | `/api/runs` | Bearer | Lists every known run (from the Control Plane's own run registry) with its live status. |
 | `GET` | `/api/runs/:runId` | Bearer | 404 if the runId is unknown. |
 | `POST` | `/api/runs` | Bearer | Body: `{ "taskId": "...", "agentProfileId"?: "..." }`. Starts the run asynchronously and returns immediately (`202`) with the new `runId` and initial status; the HTTP connection never stays open for the workflow to finish. |
@@ -169,7 +171,95 @@ Errors are always JSON, never a stack trace: `400` for a malformed request or in
 
 ### Out of scope for this PR
 
-MCP, Agent Canvas UI/plugins, Program/Architect Mode, and multi-repo/milestone routing are explicitly BOOT-02+ work; this PR only lays the HTTP surface and lifecycle groundwork they will build on.
+Program/Architect Mode, multi-repo/milestone routing, and model/reasoning-effort selection are explicitly later work.
+
+## Agent Canvas MCP bridge (BOOT-02)
+
+BOOT-02 adds a first-class MCP stdio adapter in `src/mcp/`. The runtime path is:
+
+```text
+Agent Canvas -> MCP stdio server -> HTTP Control Plane -> Orchestrator Core
+```
+
+The MCP server is only an adapter. It never imports or calls `workflowEngine` or `runTask`; all run operations go through the Control Plane HTTP API, so pause/resume/cancel and duplicate-run behavior stay owned by the orchestrator core.
+
+### MCP tools
+
+The server exposes these structured tools:
+
+| Tool | Purpose |
+| --- | --- |
+| `orchestrator_health` | Check Control Plane reachability. |
+| `orchestrator_list_tasks` | List allowlisted tasks with public metadata. |
+| `orchestrator_start_task` | Start a task by `taskId`; optional `agentProfileId`. |
+| `orchestrator_list_runs` | List known runs and public status. |
+| `orchestrator_get_run` | Fetch one run by `runId`. |
+| `orchestrator_pause_run` | Request cooperative pause. |
+| `orchestrator_resume_run` | Resume a resumable run. |
+| `orchestrator_cancel_run` | Request cooperative cancel. |
+
+Tool schemas are intentionally small. `orchestrator_start_task` accepts only `taskId` and optional `agentProfileId`; it does not accept paths, shell commands, environment maps, Git operations, merge, push, or PR creation arguments.
+
+### Configuration
+
+Start the Control Plane on the host:
+
+```sh
+export ORCHESTRATOR_CONTROL_TOKEN=<secret-from-your-secret-store>
+export ORCHESTRATOR_CONTROL_HOST=0.0.0.0
+export ORCHESTRATOR_CONTROL_PORT=8787
+export OH_SESSION_API_KEY=<agent-canvas-session-api-key>
+export OH_AGENT_PROFILE_ID=<default-agent-profile-id>
+npm run control-plane
+```
+
+`ORCHESTRATOR_CONTROL_HOST=0.0.0.0` is useful when Agent Canvas runs inside Docker and needs to reach the host through `host.docker.internal`. Keep bearer auth enabled and do not expose this listener publicly.
+
+Configure the MCP process with:
+
+- `ORCHESTRATOR_CONTROL_URL` — use `http://host.docker.internal:8787` from Agent Canvas running in Docker, or `http://127.0.0.1:8787` from the host.
+- `ORCHESTRATOR_CONTROL_TOKEN` — supply through Agent Canvas Secrets or a secure env mechanism.
+- `ORCHESTRATOR_MCP_TIMEOUT_MS` — optional request timeout override; defaults to 10000.
+
+Run the MCP server:
+
+```sh
+npm run mcp
+```
+
+Example Agent Canvas MCP config:
+
+```json
+{
+  "mcpServers": {
+    "oquestador": {
+      "command": "npm",
+      "args": ["run", "mcp"],
+      "cwd": "/projects/oquestador",
+      "env": {
+        "ORCHESTRATOR_CONTROL_URL": "http://host.docker.internal:8787",
+        "ORCHESTRATOR_CONTROL_TOKEN": "${secrets:ORCHESTRATOR_CONTROL_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+The token must not be placed in command-line args, URLs, tool names, manifests, or committed files. The MCP client sends it only as `Authorization: Bearer ...` to the Control Plane, and error responses are sanitized.
+
+### Local smoke
+
+Run the automated MCP smoke without real secrets:
+
+```sh
+npm run mcp:smoke
+```
+
+The smoke uses an in-process fake Control Plane client and the MCP SDK's in-memory transport. It confirms tools register and a health response is translated without depending on Agent Canvas, Docker, or external network access.
+
+### Troubleshooting
+
+If Agent Canvas in Docker cannot reach the Control Plane, confirm the host server is bound to an interface reachable from the container (`ORCHESTRATOR_CONTROL_HOST=0.0.0.0`) and that the MCP uses `ORCHESTRATOR_CONTROL_URL=http://host.docker.internal:8787`. If tools return `401` or `403`, check that Agent Canvas injected `ORCHESTRATOR_CONTROL_TOKEN` as an environment secret. If tools return `404` for a task, check that the task JSON is valid and lives directly under `ORCHESTRATOR_TASK_ROOT` with a safe `<taskId>.json` filename.
 
 ## Run locally
 
