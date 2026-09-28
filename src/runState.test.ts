@@ -47,7 +47,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      5,
+      6,
     );
     assert.equal(
       loaded?.taskId,
@@ -172,6 +172,18 @@ test(
     );
   },
 );
+
+test("persists requested and resolved execution without rewriting a frozen stage", () => {
+  const store = temporaryStore();
+  const initial = createInitialRunState("routed-task", "IMPLEMENTING", null);
+  const requested = { role: "implementer" as const, profileId: "builder", provider: "openai", model: "gpt-5.5", effort: "high", allowFallback: false };
+  const resolved = { role: "implementer" as const, profileId: "builder", provider: "openai", model: "gpt-5.5", effort: "high", evidence: { matchedBy: "profileId" as const } };
+  store.save({ ...initial, stageExecutions: { IMPLEMENTATION: { requested, resolved, conversationId: "conversation-1", reviewedSha: null, approvedSha: null } } });
+  const loaded = store.load("routed-task");
+  assert.equal(loaded?.stageExecutions.IMPLEMENTATION?.requested.model, "gpt-5.5");
+  assert.equal(loaded?.stageExecutions.IMPLEMENTATION?.resolved.effort, "high");
+  assert.equal(loaded?.stageExecutions.IMPLEMENTATION?.conversationId, "conversation-1");
+});
 
 test(
   "preserves BLOCKED reason as first-class state",
@@ -337,7 +349,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      5,
+      6,
     );
     assert.equal(
       loaded?.reviewAttempt,
@@ -426,7 +438,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      5,
+      6,
     );
     assert.equal(
       loaded?.preparationAttempt,
@@ -489,7 +501,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      5,
+      6,
     );
     assert.equal(
       loaded?.noChangesBaseSha,
@@ -560,7 +572,7 @@ test(
 
     assert.equal(
       loaded?.version,
-      5,
+      6,
     );
     assert.equal(
       loaded?.preparationAttempt,
@@ -628,7 +640,7 @@ test(
         store.load(
           "future-task",
         ),
-      /version must be 5/,
+    /version must be 6/,
     );
   },
 );

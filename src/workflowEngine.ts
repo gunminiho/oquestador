@@ -37,6 +37,7 @@ import {
   type ReviewOutcome,
   type WorkflowState,
 } from "./workflow";
+import type { RequestedExecution, ResolvedExecution } from "./executionRouting";
 
 const execFileAsync =
   promisify(execFile);
@@ -142,6 +143,8 @@ export interface RunWorkflowOptions {
   task: WorkflowTask;
   store: RunStateStore;
   agentProfileId: string;
+  stageAgentProfileIds?: Partial<Record<WorkflowStage, string>>;
+  stageExecutions?: Partial<Record<WorkflowStage, { requested: RequestedExecution; resolved: ResolvedExecution }>>;
   initialStateOverride?: WorkflowState;
   pollIntervalMs?: number;
   github?: GitHubClient;
@@ -1832,6 +1835,7 @@ async function runAgentStage(
               stage,
               conversationId,
             ),
+            ...stageExecutionPatch(options, runState, stage, conversationId),
           },
         );
 
@@ -1841,9 +1845,7 @@ async function runAgentStage(
             workspace:
               options.task
                 .workspace,
-            agentProfileId:
-              options
-                .agentProfileId,
+            agentProfileId: agentProfileForStage(options, stage),
             message,
             conversationId,
           });
@@ -1890,6 +1892,7 @@ async function runAgentStage(
         await getOrCreateConversation(
           options,
           conversationId,
+          stage,
           message,
         );
     }
@@ -1967,6 +1970,7 @@ async function runAgentStage(
 async function getOrCreateConversation(
   options: RunWorkflowOptions,
   conversationId: string,
+  stage: WorkflowStage,
   message: string,
 ): Promise<{
   id: string;
@@ -1995,9 +1999,7 @@ async function getOrCreateConversation(
         workspace:
           options.task
             .workspace,
-        agentProfileId:
-          options
-            .agentProfileId,
+        agentProfileId: agentProfileForStage(options, stage),
         message,
         conversationId,
       });
@@ -2013,6 +2015,17 @@ async function getOrCreateConversation(
     execution_status:
       "running",
   };
+}
+
+function agentProfileForStage(options: RunWorkflowOptions, stage: WorkflowStage): string {
+  return options.stageAgentProfileIds?.[stage] ?? options.agentProfileId;
+}
+
+function stageExecutionPatch(options: RunWorkflowOptions, state: RunState, stage: WorkflowStage, conversationId: string): Partial<RunState> {
+  if (state.stageExecutions[stage] !== undefined) return {};
+  const execution = options.stageExecutions?.[stage];
+  if (!execution) return {};
+  return { stageExecutions: { ...state.stageExecutions, [stage]: { ...execution, conversationId, reviewedSha: null, approvedSha: null } } };
 }
 
 function assertConversationId(
@@ -2147,11 +2160,25 @@ function saveState(
   store: RunStateStore,
   state: RunState,
 ): RunState {
-  store.save(state);
+  const reviewExecution = state.stageExecutions.REVIEW;
+  const persisted = reviewExecution === undefined
+    ? state
+    : {
+      ...state,
+      stageExecutions: {
+        ...state.stageExecutions,
+        REVIEW: {
+          ...reviewExecution,
+          reviewedSha: state.reviewHeadSha ?? reviewExecution.reviewedSha,
+          approvedSha: state.approvedHeadSha ?? reviewExecution.approvedSha,
+        },
+      },
+    };
+  store.save(persisted);
 
   return loadSavedState(
     store,
-    state.taskId,
+    persisted.taskId,
   );
 }
 
