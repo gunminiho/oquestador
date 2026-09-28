@@ -1,0 +1,28 @@
+{
+  "id": "orchestrator-architect-program-state-v1",
+  "repository": {
+    "owner": "gunminiho",
+    "name": "oquestador"
+  },
+  "workspace": "/projects/oquestador",
+  "baseBranch": "main",
+  "workingBranch": "feat/orchestrator-architect-program-state-v1",
+  "objective": "ARCH-02: implementar el modelo persistente de ejecución de programas: ProgramManifest compilado a un `program-plan.json` normalizado e inmutable por run, DAG de milestones, ProgramRunState versionado, recovery determinista y detección explícita de cambios de roadmap/manifest. Debe usar el routing de ARCH-01 pero todavía no ejecutar automáticamente los child workflows.",
+  "acceptanceCriteria": [
+    "Crear tipos/versiones para ProgramPlan y ProgramRunState, con migración o rechazo explícito de versiones desconocidas.",
+    "Compilar un ProgramManifest válido a un `program-plan.json` normalizado con milestones, repos, dependencias y routing solicitado ya resuelto/validado de forma determinista.",
+    "Persistir un hash/fingerprint de las fuentes del plan (manifest y roadmap refs/paths declarados) para detectar cambios posteriores.",
+    "Si una fuente cambia después de congelar el plan, marcar el programa `ROADMAP_CHANGED`/estado equivalente y exigir re-plan explícito; nunca continuar silenciosamente con un plan viejo.",
+    "Construir y validar el DAG: detectar ciclos, dependencias inexistentes, ids duplicados y repos desconocidos antes de ejecutar nada.",
+    "Persistir estado por milestone al menos: PENDING, READY, RUNNING, BLOCKED, FAILED, APPROVED, DONE/SKIPPED según corresponda, con timestamps y dependencias satisfechas.",
+    "Persistir requested/resolved execution por rol desde ARCH-01 sin recalcular retroactivamente etapas ya iniciadas.",
+    "ProgramRunState debe sobrevivir reinicio del proceso y permitir determinar deterministicamente el siguiente conjunto READY.",
+    "Soportar pause/cancel requested a nivel programa como señales persistentes y checkpoints entre milestones; no fingir cancelar child conversations activas.",
+    "Agregar tests de DAG lineal, paralelo, ciclo, dependencia ausente, resume tras restart, plan freeze, ROADMAP_CHANGED y compatibilidad de routing.",
+    "No ejecutar child workflows reales todavía; usar fakes para planificación/estado.",
+    "Actualizar README con ProgramPlan, ProgramRunState, estados y semántica de re-plan.",
+    "Pasar `npm test`, `npm run typecheck` y `git diff --check origin/main..HEAD`.",
+    "No hacer merge manual; entregar READY_FOR_REVIEW."
+  ],
+  "maxReviewCycles": 3
+}
