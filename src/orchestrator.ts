@@ -72,6 +72,17 @@ async function main(): Promise<void> {
           requiredEnv(
             "OH_AGENT_PROFILE_ID",
           ),
+        stageAgentProfileIds: {
+          ...(process.env.OH_PREPARATION_AGENT_PROFILE_ID
+            ? { PREPARATION: process.env.OH_PREPARATION_AGENT_PROFILE_ID }
+            : {}),
+          ...(process.env.OH_IMPLEMENTATION_AGENT_PROFILE_ID
+            ? { IMPLEMENTATION: process.env.OH_IMPLEMENTATION_AGENT_PROFILE_ID }
+            : {}),
+          ...(process.env.OH_REVIEW_AGENT_PROFILE_ID
+            ? { REVIEW: process.env.OH_REVIEW_AGENT_PROFILE_ID }
+            : {}),
+        },
         initialStateOverride:
           requestedInitialState,
       },

@@ -52,6 +52,7 @@ const DEFAULT_WORKTREE_ROOT =
 export interface StartRunInput {
   taskId: unknown;
   agentProfileId?: unknown;
+  stageAgentProfileIds?: unknown;
 }
 
 /**
@@ -105,6 +106,7 @@ export class RunManager {
       this.resolveAgentProfileId(
         input.agentProfileId,
       );
+    const stageAgentProfileIds = this.resolveStageAgentProfileIds(input.stageAgentProfileIds);
 
     const blocking =
       this.findBlockingRunForTask(
@@ -132,6 +134,7 @@ export class RunManager {
       runId,
       taskId: task.id,
       agentProfileId,
+      ...(stageAgentProfileIds ? { stageAgentProfileIds } : {}),
       workspace,
       createdAt: now,
       updatedAt: now,
@@ -164,7 +167,7 @@ export class RunManager {
       );
     }
 
-    this.launch(runId, task, agentProfileId);
+    this.launch(runId, task, agentProfileId, stageAgentProfileIds);
 
     return this.requireRunSummary(runId);
   }
@@ -222,6 +225,7 @@ export class RunManager {
       runId,
       task,
       record.agentProfileId,
+      record.stageAgentProfileIds,
     );
 
     this.deps.controlPlaneStore.save(
@@ -384,6 +388,18 @@ export class RunManager {
     return requested;
   }
 
+  private resolveStageAgentProfileIds(value: unknown): Partial<Record<"PREPARATION" | "IMPLEMENTATION" | "REVIEW", string>> | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw new ValidationError("stageAgentProfileIds must be an object when provided.");
+    const output: Partial<Record<"PREPARATION" | "IMPLEMENTATION" | "REVIEW", string>> = {};
+    for (const [stage, profileId] of Object.entries(value)) {
+      if (stage !== "PREPARATION" && stage !== "IMPLEMENTATION" && stage !== "REVIEW") throw new ValidationError(`stageAgentProfileIds has unknown stage ${stage}.`);
+      if (typeof profileId !== "string" || !profileId.trim()) throw new ValidationError(`stageAgentProfileIds.${stage} must be a non-empty string.`);
+      output[stage] = profileId;
+    }
+    return output;
+  }
+
   private findBlockingRunForTask(
     taskId: string,
   ): RunSummary | null {
@@ -413,11 +429,13 @@ export class RunManager {
     runId: string,
     task: WorkflowTask,
     agentProfileId: string,
+    stageAgentProfileIds?: Partial<Record<"PREPARATION" | "IMPLEMENTATION" | "REVIEW", string>>,
   ): void {
     const promise = runTask(
       {
         task,
         agentProfileId,
+        stageAgentProfileIds,
       },
       {
         client: this.deps.client,

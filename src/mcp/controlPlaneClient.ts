@@ -94,6 +94,7 @@ export class ControlPlaneClient {
     input: {
       taskId: string;
       agentProfileId?: string;
+      stageAgentProfileIds?: Partial<Record<"PREPARATION" | "IMPLEMENTATION" | "REVIEW", string>>;
     },
   ): Promise<RunSummary> {
     return this.request<RunSummary>(

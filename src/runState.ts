@@ -11,8 +11,9 @@ import {
   type ReviewerVerdict,
   type WorkflowState,
 } from "./workflow";
+import type { RequestedExecution, ResolvedExecution } from "./executionRouting";
 
-export const RUN_STATE_VERSION = 5;
+export const RUN_STATE_VERSION = 6;
 
 export type WorkflowStage =
   | "PREPARATION"
@@ -57,6 +58,8 @@ export interface RunState {
   cancelledFromState: WorkflowState | null;
   lastBlockerKey: string | null;
   repeatedBlockerCount: number;
+  /** Frozen before a stage creates its conversation; never re-resolved on resume. */
+  stageExecutions: Partial<Record<WorkflowStage, { requested: RequestedExecution; resolved: ResolvedExecution; conversationId: string | null; reviewedSha: string | null; approvedSha: string | null }>>;
   createdAt: string;
   updatedAt: string;
 }
@@ -96,6 +99,7 @@ export function createInitialRunState(
     cancelledFromState: null,
     lastBlockerKey: null,
     repeatedBlockerCount: 0,
+    stageExecutions: {},
     createdAt: timestamp,
     updatedAt: timestamp,
   };
@@ -193,6 +197,7 @@ export function validateRunState(
     value.preparationAttempt,
     `${source}.preparationAttempt`,
   );
+  assertStageExecutions(value.stageExecutions, `${source}.stageExecutions`);
   assertNonNegativeInteger(
     value.implementationCycle,
     `${source}.implementationCycle`,
@@ -303,7 +308,8 @@ function migrateRunState(
     value.version !== 1 &&
     value.version !== 2 &&
     value.version !== 3 &&
-    value.version !== 4
+    value.version !== 4 &&
+    value.version !== 5
   ) {
     throw new Error(
       `${source}.version must be ${RUN_STATE_VERSION}.`,
@@ -347,7 +353,19 @@ function migrateRunState(
     cancelledFromState: null,
     lastBlockerKey: null,
     repeatedBlockerCount: 0,
+    stageExecutions: {},
   };
+}
+
+function assertStageExecutions(value: unknown, field: string): void {
+  if (!isRecord(value)) throw new Error(`${field} must be an object.`);
+  for (const [stage, execution] of Object.entries(value)) {
+    if (stage !== "PREPARATION" && stage !== "IMPLEMENTATION" && stage !== "REVIEW") throw new Error(`${field} has unknown stage ${stage}.`);
+    if (!isRecord(execution) || !isRecord(execution.requested) || !isRecord(execution.resolved)) throw new Error(`${field}.${stage} must contain requested and resolved execution.`);
+    assertNullableString(execution.conversationId, `${field}.${stage}.conversationId`);
+    assertNullableSha(execution.reviewedSha, `${field}.${stage}.reviewedSha`);
+    assertNullableSha(execution.approvedSha, `${field}.${stage}.approvedSha`);
+  }
 }
 
 function safeTaskId(taskId: string): string {

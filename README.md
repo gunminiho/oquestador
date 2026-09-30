@@ -2,6 +2,18 @@
 
 oquestador is a proof of concept for coordinating development agents through OpenHands. It keeps control of workspace isolation, workflow state, GitHub publication, review loops, recovery, and deterministic merge decisions while Implementer and Reviewer agents focus on their roles.
 
+## Architect routing (ARCH-01)
+
+ARCH-01 adds a side-effect-free, versioned `ProgramManifest` parser for describing repositories, milestones, declarative dependencies, and role routing. It does not schedule a DAG or run a program. Routes keep `profileId` (or `profileAlias`), `provider`, `model`, and `effort` as separate fields. The program-level `architect` route is reserved for later phases; each milestone can override `implementer` and `reviewer` independently.
+
+```json
+{"version":1,"programId":"release","repositories":[{"id":"api","owner":"acme","name":"api"}],"milestones":[{"id":"m1","repositoryId":"api","routing":{"reviewer":{"profileId":"reviewer","provider":"openai","model":"gpt-5.5","effort":"high"}}}],"routing":{"defaults":{"architect":{"profileAlias":"architect","provider":"openai","model":"gpt-5.5","effort":"high"},"implementer":{"profileId":"builder","provider":"openai","model":"gpt-5.5","effort":"medium"}}}}
+```
+
+`allowFallback` defaults to `false`. Resolution checks the selected profile's provider, model, and effort exactly and returns a structured block reason on a mismatch. A fallback can only be selected when `allowFallback: true` is declared, and it must still be an exact route. Profile catalogues contain only non-secret metadata (`id`, name/aliases, provider, model, effort).
+
+Before a routed stage creates a conversation, its requested and resolved execution can be persisted in `RunState.stageExecutions`; this record is frozen on first creation, so later configuration cannot rewrite it. Existing single-task runs remain compatible: `OH_AGENT_PROFILE_ID` is still used for every stage and no model or effort is inferred. Optional `OH_PREPARATION_AGENT_PROFILE_ID`, `OH_IMPLEMENTATION_AGENT_PROFILE_ID`, and `OH_REVIEW_AGENT_PROFILE_ID` select a distinct Agent Canvas profile for those stages.
+
 BOOT-01 turned the original CLI-only proof of concept into a reusable core with two front ends that share it: the original CLI (`src/orchestrator.ts`) and a persistent HTTP Control Plane (`src/control-plane/`). See [Reusable core (BOOT-01)](#reusable-core-boot-01) and [Control Plane (BOOT-01)](#control-plane-boot-01) below.
 
 ## Workflow

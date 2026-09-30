@@ -4,6 +4,7 @@ import {
 } from "./workflowEngine";
 import { GhCliGitHubClient, type GitHubClient } from "./GitHubClient";
 import type { RunState, RunStateStore } from "./runState";
+import type { RequestedExecution, ResolvedExecution } from "./executionRouting";
 import type { WorkflowTask } from "./task";
 import type { WorkflowState } from "./workflow";
 import {
@@ -22,6 +23,8 @@ export interface RunTaskDependencies {
 export interface RunTaskOptions {
   task: WorkflowTask;
   agentProfileId: string;
+  stageAgentProfileIds?: Partial<Record<"PREPARATION" | "IMPLEMENTATION" | "REVIEW", string>>;
+  stageExecutions?: Partial<Record<"PREPARATION" | "IMPLEMENTATION" | "REVIEW", { requested: RequestedExecution; resolved: ResolvedExecution }>>;
   initialStateOverride?: WorkflowState;
   pollIntervalMs?: number;
 }
@@ -69,6 +72,8 @@ export async function runTask(
     store: deps.store,
     agentProfileId:
       options.agentProfileId,
+    stageAgentProfileIds: options.stageAgentProfileIds,
+    stageExecutions: options.stageExecutions,
     initialStateOverride:
       options.initialStateOverride,
     pollIntervalMs:

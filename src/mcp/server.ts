@@ -103,6 +103,7 @@ export function createOrchestratorMcpServer(
               .describe(
                 "Optional Agent Canvas profile id configured in the Control Plane.",
               ),
+          stageAgentProfileIds: z.object({ PREPARATION: agentProfileIdSchema.optional(), IMPLEMENTATION: agentProfileIdSchema.optional(), REVIEW: agentProfileIdSchema.optional() }).strict().optional().describe("Optional explicit profile ids per workflow stage."),
         })
         .strict(),
       annotations: {
@@ -117,6 +118,7 @@ export function createOrchestratorMcpServer(
             taskId: args.taskId,
             agentProfileId:
               args.agentProfileId,
+            ...(args.stageAgentProfileIds === undefined ? {} : { stageAgentProfileIds: args.stageAgentProfileIds }),
           }),
         ),
       ),
